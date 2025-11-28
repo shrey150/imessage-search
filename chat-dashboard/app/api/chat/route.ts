@@ -167,6 +167,132 @@ Use this for:
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'analytics_query',
+      description: `Get aggregate statistics and trends from message data. Use for counting, trends over time, and distributions.
+
+Use this for:
+- "How many messages did I send to X?"
+- "Who do I text the most?"
+- "How has my messaging changed over time?"
+- "What time of day do I message most?"
+
+Do NOT use for finding specific message content - use search_messages instead.
+
+STRUCTURED MODE (preferred): Use aggregationType + field parameters.
+RAW MODE: Use rawAggregation for complex nested queries.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          aggregationType: {
+            type: 'string',
+            enum: ['date_histogram', 'terms', 'stats', 'count'],
+            description: 'Type of aggregation: date_histogram (trends over time), terms (top values), stats (numeric statistics), count (simple count)',
+          },
+          field: {
+            type: 'string',
+            enum: ['timestamp', 'sender', 'chat_name', 'hour_of_day', 'day_of_week', 'month', 'year'],
+            description: 'Field to aggregate on',
+          },
+          interval: {
+            type: 'string',
+            enum: ['day', 'week', 'month', 'year'],
+            description: 'Time interval for date_histogram aggregations',
+          },
+          query: {
+            type: 'string',
+            description: 'Optional text filter (e.g., messages containing "dinner")',
+          },
+          sender: {
+            type: 'string',
+            description: 'Filter by sender name',
+          },
+          chatName: {
+            type: 'string',
+            description: 'Filter by group chat name',
+          },
+          startDate: {
+            type: 'string',
+            description: 'Start date filter (ISO format: YYYY-MM-DD)',
+          },
+          endDate: {
+            type: 'string',
+            description: 'End date filter (ISO format: YYYY-MM-DD)',
+          },
+          size: {
+            type: 'number',
+            description: 'Max buckets to return (default 20, max 100)',
+          },
+          rawAggregation: {
+            type: 'object',
+            description: 'Raw Elasticsearch aggregation DSL for complex queries (advanced use)',
+          },
+          rawQuery: {
+            type: 'object',
+            description: 'Raw Elasticsearch query DSL (advanced use)',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'render_chart',
+      description: `Render data as an inline chart visualization. 
+
+CRITICAL: You MUST pass the actual data array from analytics_query results. The 'data' parameter must contain the actual data points - you cannot reference them, you must include them.
+
+Example - after analytics_query returns buckets like:
+  [{"key": "2024-01", "label": "Jan 2024", "doc_count": 42}, ...]
+
+You must call render_chart with:
+  data: [{"label": "Jan 2024", "count": 42}, {"label": "Feb 2024", "count": 38}, ...]
+  xKey: "label"
+  yKey: "count"`,
+      parameters: {
+        type: 'object',
+        properties: {
+          chartType: {
+            type: 'string',
+            enum: ['line', 'bar', 'area', 'pie'],
+            description: 'Type of chart to render',
+          },
+          title: {
+            type: 'string',
+            description: 'Chart title (be descriptive)',
+          },
+          data: {
+            type: 'array',
+            items: {
+              type: 'object',
+            },
+            description: 'REQUIRED: The actual array of data points from analytics_query. Must include all data points, e.g., [{"label": "Jan 2024", "count": 42}, {"label": "Feb 2024", "count": 38}]',
+          },
+          xKey: {
+            type: 'string',
+            description: 'Key in data objects for x-axis values (e.g., "label")',
+          },
+          yKey: {
+            type: 'string',
+            description: 'Key in data objects for y-axis values (e.g., "count", "doc_count")',
+          },
+          xLabel: {
+            type: 'string',
+            description: 'Label for x-axis',
+          },
+          yLabel: {
+            type: 'string',
+            description: 'Label for y-axis',
+          },
+        },
+        required: ['chartType', 'title', 'data', 'xKey', 'yKey'],
+      },
+    },
+  },
 ];
 
 // Execute tool calls
@@ -239,6 +365,119 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       });
 
       return formatResults(results);
+    }
+
+    if (name === 'analytics_query') {
+      const { 
+        aggregationType, 
+        field, 
+        interval, 
+        query, 
+        sender, 
+        chatName, 
+        startDate, 
+        endDate, 
+        size = 20,
+        rawAggregation,
+        rawQuery,
+      } = args as {
+        aggregationType?: 'date_histogram' | 'terms' | 'stats' | 'count';
+        field?: 'timestamp' | 'sender' | 'chat_name' | 'hour_of_day' | 'day_of_week' | 'month' | 'year';
+        interval?: 'day' | 'week' | 'month' | 'year';
+        query?: string;
+        sender?: string;
+        chatName?: string;
+        startDate?: string;
+        endDate?: string;
+        size?: number;
+        rawAggregation?: Record<string, unknown>;
+        rawQuery?: Record<string, unknown>;
+      };
+
+      const filters = {
+        sender,
+        chat_name: chatName,
+        timestamp_gte: startDate,
+        timestamp_lte: endDate,
+      };
+
+      // RAW MODE: Use custom aggregation
+      if (rawAggregation) {
+        const result = await es.runRawAggregation({
+          aggregation: rawAggregation,
+          query: rawQuery,
+          filters,
+        });
+        return JSON.stringify(result, null, 2);
+      }
+
+      // STRUCTURED MODE
+      if (aggregationType === 'count') {
+        const result = await es.getCount({ query, filters });
+        return JSON.stringify({ type: 'count', ...result }, null, 2);
+      }
+
+      if (aggregationType === 'date_histogram') {
+        const result = await es.aggregateByDate({
+          interval: interval || 'month',
+          query,
+          filters,
+          size: Math.min(size, 100),
+        });
+        return JSON.stringify(result, null, 2);
+      }
+
+      if (aggregationType === 'terms' && field) {
+        if (!['sender', 'chat_name', 'day_of_week', 'hour_of_day', 'year', 'month'].includes(field)) {
+          return JSON.stringify({ error: `Invalid field for terms aggregation: ${field}` });
+        }
+        const result = await es.aggregateByField({
+          field: field as 'sender' | 'chat_name' | 'day_of_week' | 'hour_of_day' | 'year' | 'month',
+          query,
+          filters,
+          size: Math.min(size, 100),
+        });
+        return JSON.stringify(result, null, 2);
+      }
+
+      if (aggregationType === 'stats' && field) {
+        if (!['hour_of_day', 'message_count', 'participant_count'].includes(field)) {
+          return JSON.stringify({ error: `Invalid field for stats aggregation: ${field}` });
+        }
+        const result = await es.getStats_agg({
+          field: field as 'hour_of_day' | 'message_count' | 'participant_count',
+          query,
+          filters,
+        });
+        return JSON.stringify(result, null, 2);
+      }
+
+      return JSON.stringify({ error: 'Invalid aggregation configuration. Specify aggregationType and required fields.' });
+    }
+
+    if (name === 'render_chart') {
+      const { chartType, title, data, xKey, yKey, xLabel, yLabel } = args as {
+        chartType: 'line' | 'bar' | 'area' | 'pie';
+        title: string;
+        data: Array<Record<string, unknown>>;
+        xKey: string;
+        yKey: string;
+        xLabel?: string;
+        yLabel?: string;
+      };
+
+      // Output a special fenced block that the frontend will parse and render as a chart
+      const chartConfig = {
+        chartType,
+        title,
+        data,
+        xKey,
+        yKey,
+        xLabel,
+        yLabel,
+      };
+
+      return `:::chart\n${JSON.stringify(chartConfig)}\n:::`;
     }
 
     return `Unknown tool: ${name}`;
@@ -333,6 +572,40 @@ All claims trace to retrieved messages. If unsure, search again. Label speculati
 
 **exact_search** — Precise keyword/phrase matching, no semantic interpretation.
 - Best for: exact quotes, specific names, first occurrences, when semantic returns noise
+
+**analytics_query** — Get aggregate data (counts, trends, distributions)
+- Best for: "How many messages?", "Who do I text most?", "How has texting changed over time?"
+- NOT for finding specific message content
+
+**render_chart** — Visualize data inline as charts
+- Use AFTER getting data from analytics_query
+- CRITICAL: You must pass the actual data array from analytics_query in the 'data' parameter
+- Transform buckets: [{key, label, doc_count}] → [{label, count}] for the chart
+- Choose: line/area for time series, bar for rankings, pie for proportions
+
+### When to use analytics_query vs search tools:
+- "How many messages did I send?" → analytics_query (count)
+- "What did I say about X?" → search_messages (content)
+- "Who do I text most?" → analytics_query (terms on sender)
+- "Show messages from John" → search_messages (retrieval)
+- "How has texting changed over time?" → analytics_query (date_histogram)
+
+### Analytics query modes:
+**Structured mode** (preferred):
+- aggregationType: date_histogram | terms | stats | count
+- field: timestamp, sender, chat_name, hour_of_day, day_of_week, month, year
+- interval: day, week, month, year (for date_histogram)
+
+**Raw mode** (for complex queries):
+- Use rawAggregation for nested aggregations like "by day of week, sub-grouped by hour"
+
+### Visualization best practices:
+1. Always analyze data first - share insights before charting
+2. When calling render_chart, you MUST pass the data array with actual values:
+   - Get buckets from analytics_query: [{"key": "2024-01", "label": "Jan 2024", "doc_count": 42}, ...]
+   - Pass to render_chart: data: [{"label": "Jan 2024", "count": 42}, ...], xKey: "label", yKey: "count"
+3. Choose chart type: line/area for time series, bar for rankings, pie for proportions
+4. Keep to ~20 data points for readability
 
 ---
 
@@ -474,6 +747,12 @@ After each search, share observations before the next search. Build the narrativ
             
             // Stream timing info
             controller.enqueue(encoder.encode(`⏱️ *${duration}ms*\n\n`));
+
+            // For render_chart, stream the chart block directly to the client
+            // so it appears inline in the chat
+            if (tc.function.name === 'render_chart') {
+              controller.enqueue(encoder.encode(`\n${result}\n\n`));
+            }
 
             // Add tool result to messages
             chatMessages.push({

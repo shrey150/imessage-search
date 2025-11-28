@@ -69,6 +69,39 @@ export interface HybridSearchOptions {
   limit?: number;
 }
 
+/**
+ * Result from aggregation queries
+ */
+export interface AggregationBucket {
+  key: string;
+  label: string;
+  doc_count: number;
+}
+
+export interface AggregationResult {
+  type: 'date_histogram' | 'terms';
+  field?: string;
+  total: number;
+  buckets: AggregationBucket[];
+}
+
+export interface StatsResult {
+  type: 'stats';
+  field: string;
+  total: number;
+  count: number;
+  min: number;
+  max: number;
+  avg: number;
+  sum: number;
+}
+
+export interface RawAggregationResult {
+  type: 'raw';
+  total: number;
+  aggregations: Record<string, unknown>;
+}
+
 class ElasticsearchClient {
   private client: Client;
 
@@ -273,7 +306,7 @@ class ElasticsearchClient {
       : { match_all: {} };
 
     // Sorting
-    const sort: Array<Record<string, unknown>> = [];
+    const sort: Array<Record<string, { order: 'asc' | 'desc' }>> = [];
     if (sortBy === 'newest') {
       sort.push({ timestamp: { order: 'desc' } });
     } else if (sortBy === 'oldest') {
@@ -285,7 +318,8 @@ class ElasticsearchClient {
       index: INDEX_NAME,
       query,
       size: limit,
-      sort: sort.length > 0 ? sort : undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sort: sort.length > 0 ? sort as any : undefined,
       _source: { excludes: ['text_embedding', 'image_embedding'] },
     });
 
@@ -493,6 +527,299 @@ class ElasticsearchClient {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Aggregate messages by date (date histogram)
+   * Returns buckets with counts over time
+   */
+  async aggregateByDate(options: {
+    interval: 'day' | 'week' | 'month' | 'year';
+    query?: string;
+    filters?: SearchFilters;
+    size?: number;
+  }): Promise<AggregationResult> {
+    const { interval, query, filters, size = 100 } = options;
+    const filterClauses = this.buildFilterClauses(filters);
+
+    // Add text query if provided
+    const queryClause: Record<string, unknown> = {};
+    if (query) {
+      queryClause.must = [{ match: { text: query } }];
+    }
+    if (filterClauses.length > 0) {
+      queryClause.filter = filterClauses;
+    }
+
+    const esQuery = Object.keys(queryClause).length > 0
+      ? { bool: queryClause }
+      : { match_all: {} };
+
+    // Map interval to ES calendar_interval
+    const calendarInterval = interval === 'day' ? 'day' 
+      : interval === 'week' ? 'week'
+      : interval === 'month' ? 'month'
+      : 'year';
+
+    const response = await this.client.search({
+      index: INDEX_NAME,
+      size: 0, // We only want aggregations, not documents
+      query: esQuery,
+      aggs: {
+        by_date: {
+          date_histogram: {
+            field: 'timestamp',
+            calendar_interval: calendarInterval,
+            format: interval === 'year' ? 'yyyy' 
+              : interval === 'month' ? 'yyyy-MM'
+              : interval === 'week' ? 'yyyy-MM-dd'
+              : 'yyyy-MM-dd',
+            min_doc_count: 0,
+          },
+        },
+      },
+    });
+
+    const total = typeof response.hits.total === 'number'
+      ? response.hits.total
+      : response.hits.total?.value || 0;
+
+    // Extract buckets from response
+    const aggs = response.aggregations as Record<string, unknown> | undefined;
+    const byDate = aggs?.by_date as { buckets: Array<{ key_as_string: string; doc_count: number }> } | undefined;
+    
+    const buckets = (byDate?.buckets || []).slice(0, size).map(bucket => ({
+      key: bucket.key_as_string,
+      label: this.formatDateLabel(bucket.key_as_string, interval),
+      doc_count: bucket.doc_count,
+    }));
+
+    return {
+      type: 'date_histogram',
+      total,
+      buckets,
+    };
+  }
+
+  /**
+   * Aggregate messages by a keyword field (terms aggregation)
+   * Returns top values by count
+   */
+  async aggregateByField(options: {
+    field: 'sender' | 'chat_name' | 'day_of_week' | 'hour_of_day' | 'year' | 'month';
+    query?: string;
+    filters?: SearchFilters;
+    size?: number;
+  }): Promise<AggregationResult> {
+    const { field, query, filters, size = 20 } = options;
+    const filterClauses = this.buildFilterClauses(filters);
+
+    // Add text query if provided
+    const queryClause: Record<string, unknown> = {};
+    if (query) {
+      queryClause.must = [{ match: { text: query } }];
+    }
+    if (filterClauses.length > 0) {
+      queryClause.filter = filterClauses;
+    }
+
+    const esQuery = Object.keys(queryClause).length > 0
+      ? { bool: queryClause }
+      : { match_all: {} };
+
+    const cappedSize = Math.min(size, 100); // Cap at 100 buckets
+
+    const response = await this.client.search({
+      index: INDEX_NAME,
+      size: 0,
+      query: esQuery,
+      aggs: {
+        by_field: {
+          terms: {
+            field,
+            size: cappedSize,
+          },
+        },
+      },
+    });
+
+    const total = typeof response.hits.total === 'number'
+      ? response.hits.total
+      : response.hits.total?.value || 0;
+
+    const aggs = response.aggregations as Record<string, unknown> | undefined;
+    const byField = aggs?.by_field as { buckets: Array<{ key: string | number; doc_count: number }> } | undefined;
+
+    const buckets = (byField?.buckets || []).map(bucket => ({
+      key: String(bucket.key),
+      label: this.formatFieldLabel(String(bucket.key), field),
+      doc_count: bucket.doc_count,
+    }));
+
+    return {
+      type: 'terms',
+      field,
+      total,
+      buckets,
+    };
+  }
+
+  /**
+   * Get basic count with optional filters
+   */
+  async getCount(options: {
+    query?: string;
+    filters?: SearchFilters;
+  }): Promise<{ total: number }> {
+    const { query, filters } = options;
+    const filterClauses = this.buildFilterClauses(filters);
+
+    const queryClause: Record<string, unknown> = {};
+    if (query) {
+      queryClause.must = [{ match: { text: query } }];
+    }
+    if (filterClauses.length > 0) {
+      queryClause.filter = filterClauses;
+    }
+
+    const esQuery = Object.keys(queryClause).length > 0
+      ? { bool: queryClause }
+      : { match_all: {} };
+
+    const response = await this.client.count({
+      index: INDEX_NAME,
+      query: esQuery,
+    });
+
+    return { total: response.count };
+  }
+
+  /**
+   * Get statistics for a numeric field
+   */
+  async getStats_agg(options: {
+    field: 'hour_of_day' | 'message_count' | 'participant_count';
+    query?: string;
+    filters?: SearchFilters;
+  }): Promise<StatsResult> {
+    const { field, query, filters } = options;
+    const filterClauses = this.buildFilterClauses(filters);
+
+    const queryClause: Record<string, unknown> = {};
+    if (query) {
+      queryClause.must = [{ match: { text: query } }];
+    }
+    if (filterClauses.length > 0) {
+      queryClause.filter = filterClauses;
+    }
+
+    const esQuery = Object.keys(queryClause).length > 0
+      ? { bool: queryClause }
+      : { match_all: {} };
+
+    const response = await this.client.search({
+      index: INDEX_NAME,
+      size: 0,
+      query: esQuery,
+      aggs: {
+        stats: {
+          stats: { field },
+        },
+      },
+    });
+
+    const total = typeof response.hits.total === 'number'
+      ? response.hits.total
+      : response.hits.total?.value || 0;
+
+    const aggs = response.aggregations as Record<string, unknown> | undefined;
+    const stats = aggs?.stats as { count: number; min: number; max: number; avg: number; sum: number } | undefined;
+
+    return {
+      type: 'stats',
+      field,
+      total,
+      count: stats?.count || 0,
+      min: stats?.min || 0,
+      max: stats?.max || 0,
+      avg: stats?.avg || 0,
+      sum: stats?.sum || 0,
+    };
+  }
+
+  /**
+   * Run a raw/custom aggregation query
+   * For complex nested aggregations that don't fit the structured methods
+   */
+  async runRawAggregation(options: {
+    aggregation: Record<string, unknown>;
+    query?: Record<string, unknown>;
+    filters?: SearchFilters;
+  }): Promise<RawAggregationResult> {
+    const { aggregation, query: rawQuery, filters } = options;
+    const filterClauses = this.buildFilterClauses(filters);
+
+    // Build the query
+    let esQuery: Record<string, unknown>;
+    if (rawQuery) {
+      esQuery = rawQuery;
+    } else if (filterClauses.length > 0) {
+      esQuery = { bool: { filter: filterClauses } };
+    } else {
+      esQuery = { match_all: {} };
+    }
+
+    const response = await this.client.search({
+      index: INDEX_NAME,
+      size: 0,
+      query: esQuery,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      aggs: aggregation as any,
+      timeout: '10s', // Safety timeout for complex queries
+    });
+
+    const total = typeof response.hits.total === 'number'
+      ? response.hits.total
+      : response.hits.total?.value || 0;
+
+    return {
+      type: 'raw',
+      total,
+      aggregations: response.aggregations as Record<string, unknown>,
+    };
+  }
+
+  /**
+   * Format date string to human-readable label
+   */
+  private formatDateLabel(dateStr: string, interval: string): string {
+    if (interval === 'year') {
+      return dateStr;
+    }
+    if (interval === 'month') {
+      const [year, month] = dateStr.split('-');
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return `${monthNames[parseInt(month) - 1]} ${year}`;
+    }
+    // For day/week, return as-is or format
+    return dateStr;
+  }
+
+  /**
+   * Format field value to human-readable label
+   */
+  private formatFieldLabel(value: string, field: string): string {
+    if (field === 'hour_of_day') {
+      const hour = parseInt(value);
+      if (hour === 0) return '12 AM';
+      if (hour === 12) return '12 PM';
+      return hour < 12 ? `${hour} AM` : `${hour - 12} PM`;
+    }
+    if (field === 'month') {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return monthNames[parseInt(value) - 1] || value;
+    }
+    return value;
   }
 }
 

@@ -3,14 +3,88 @@
 import { memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
+import { AnalyticsChart, type ChartConfig } from "./analytics-chart";
 
 export type ChatMessageProps = {
   children: string;
   className?: string;
 };
 
+// Parse a :::chart block and extract the config
+function parseChartBlock(block: string): { config: ChartConfig | null; error: string | null } {
+  try {
+    const config = JSON.parse(block);
+    
+    // Check for required fields
+    const missing: string[] = [];
+    if (!config.chartType) missing.push('chartType');
+    if (!config.title) missing.push('title');
+    if (!config.data) missing.push('data');
+    if (!Array.isArray(config.data) && config.data) missing.push('data must be an array');
+    if (!config.xKey) missing.push('xKey');
+    if (!config.yKey) missing.push('yKey');
+    
+    if (missing.length > 0) {
+      return { config: null, error: `Missing required fields: ${missing.join(', ')}` };
+    }
+    
+    if (config.data.length === 0) {
+      return { config: null, error: 'Data array is empty' };
+    }
+    
+    return { config: config as ChartConfig, error: null };
+  } catch (e) {
+    return { config: null, error: `Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}` };
+  }
+}
+
 // Parse content and convert chunk links to clickable elements
 function parseContent(content: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  
+  // First, split by chart blocks
+  const chartPattern = /:::chart\n([\s\S]*?)\n:::/g;
+  let lastChartIndex = 0;
+  let chartMatch;
+  let chartKey = 0;
+
+  while ((chartMatch = chartPattern.exec(content)) !== null) {
+    // Parse content before the chart block
+    if (chartMatch.index > lastChartIndex) {
+      const textBefore = content.slice(lastChartIndex, chartMatch.index);
+      nodes.push(...parseTextContent(textBefore, chartKey));
+      chartKey += 1000;
+    }
+
+    // Parse and render the chart
+    const { config: chartConfig, error: chartError } = parseChartBlock(chartMatch[1]);
+    if (chartConfig) {
+      nodes.push(
+        <AnalyticsChart key={`chart-${chartKey++}`} config={chartConfig} />
+      );
+    } else {
+      // If chart parsing failed, show the error
+      nodes.push(
+        <div key={`chart-error-${chartKey++}`} className="my-2 p-3 rounded-lg border border-destructive/50 bg-destructive/10 text-destructive">
+          <p className="text-sm font-medium">Chart Error: {chartError}</p>
+          <pre className="mt-2 text-xs overflow-x-auto">{chartMatch[1].substring(0, 200)}...</pre>
+        </div>
+      );
+    }
+
+    lastChartIndex = chartMatch.index + chartMatch[0].length;
+  }
+
+  // Parse remaining content after last chart
+  if (lastChartIndex < content.length) {
+    nodes.push(...parseTextContent(content.slice(lastChartIndex), chartKey));
+  }
+
+  return nodes;
+}
+
+// Parse text content (non-chart) and convert chunk links to clickable elements
+function parseTextContent(content: string, keyOffset: number): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   
   // Regex to match /search?chunk=... patterns (with or without backticks)
@@ -18,7 +92,7 @@ function parseContent(content: string): React.ReactNode[] {
   
   let lastIndex = 0;
   let match;
-  let key = 0;
+  let key = keyOffset;
 
   while ((match = linkPattern.exec(content)) !== null) {
     // Add text before the match
