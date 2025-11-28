@@ -734,7 +734,17 @@ After each search, share observations before the next search. Build the narrativ
             
             // Format args for UI display
             const argsList = Object.entries(args)
-              .map(([key, value]) => `  • ${key}: \`${value}\``)
+              .map(([key, value]) => {
+                // For arrays (like data), show count instead of [object Object]
+                if (Array.isArray(value)) {
+                  return `  • ${key}: [${value.length} items]`;
+                }
+                // For objects, stringify them
+                if (typeof value === 'object' && value !== null) {
+                  return `  • ${key}: ${JSON.stringify(value)}`;
+                }
+                return `  • ${key}: \`${value}\``;
+              })
               .join('\n');
             
             // Stream tool info with details
