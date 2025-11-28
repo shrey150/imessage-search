@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MessageSquare, Search, Sparkles } from "lucide-react";
+import { Search, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function Nav() {
@@ -34,6 +34,14 @@ export function Nav() {
         >
           <Search className="h-4 w-4" />
           Spotlight
+          <kbd className={cn(
+            "ml-1 hidden sm:inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium",
+            pathname === "/search"
+              ? "bg-black/10 text-black/60"
+              : "bg-white/10 text-white/50"
+          )}>
+            ⌘K
+          </kbd>
         </Link>
       </div>
     </nav>

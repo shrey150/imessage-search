@@ -441,7 +441,8 @@ export class ElasticsearchDB {
         script_score: {
           query: { match_all: {} },
           script: {
-            source: "cosineSimilarity(params.query_vector, 'text_embedding') + 1.0",
+            // Guard against documents without embeddings to prevent runtime errors
+            source: "doc['text_embedding'].size() != 0 ? cosineSimilarity(params.query_vector, 'text_embedding') + 1.0 : 0",
             params: { query_vector: queryEmbedding }
           }
         }

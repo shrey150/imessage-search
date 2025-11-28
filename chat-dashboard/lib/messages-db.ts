@@ -38,6 +38,7 @@ export interface Attachment {
   transferName: string | null; // Original filename
   totalBytes: number;
   isImage: boolean;
+  isVideo: boolean;
 }
 
 export interface Message {
@@ -172,6 +173,17 @@ const IMAGE_MIME_TYPES = [
   'image/bmp',
 ];
 
+// Video MIME types
+const VIDEO_MIME_TYPES = [
+  'video/mp4',
+  'video/quicktime', // .mov files
+  'video/x-m4v',
+  'video/mpeg',
+  'video/webm',
+  'video/3gpp',
+  'video/3gpp2',
+];
+
 /**
  * Resolve attachment path (replace ~ with home directory)
  */
@@ -298,6 +310,8 @@ export class MessagesDB {
       const mimeType = row.mime_type || '';
       const isImage = IMAGE_MIME_TYPES.includes(mimeType) || 
         /\.(jpg|jpeg|png|gif|heic|webp|tiff|bmp)$/i.test(resolvedPath);
+      const isVideo = VIDEO_MIME_TYPES.includes(mimeType) || 
+        /\.(mp4|mov|m4v|mpeg|mpg|webm|3gp|3g2)$/i.test(resolvedPath);
       
       const attachment: Attachment = {
         rowid: row.ROWID,
@@ -306,6 +320,7 @@ export class MessagesDB {
         transferName: row.transfer_name,
         totalBytes: row.total_bytes,
         isImage,
+        isVideo,
       };
       
       if (!result.has(row.message_id)) {

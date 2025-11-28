@@ -225,6 +225,154 @@ function highlightMatches(text: string, query: string): React.ReactNode {
   });
 }
 
+// Extract the matching message from chunk text for preview
+// Returns the sender and clean message text that contains the search query
+function extractMatchingMessage(chunkText: string, query: string): { sender: string; text: string; contextBefore?: string } | null {
+  if (!query.trim()) return null;
+
+  const queryLower = query.toLowerCase();
+  const queryWords = query.trim().split(/\s+/).filter(w => w.length >= 2);
+  
+  // Parse individual messages from the chunk
+  // Format: [Name Time] message text
+  const messagePattern = /\[([^\]]+?)\s+(\d{1,2}:\d{2}\s*(?:AM|PM)?)\]\s*/gi;
+  const messages: { sender: string; text: string; fullMatch: string }[] = [];
+  
+  let match;
+  const matches: { sender: string; startIndex: number; endIndex: number }[] = [];
+  
+  // First pass: find all message headers
+  while ((match = messagePattern.exec(chunkText)) !== null) {
+    matches.push({
+      sender: match[1].trim(),
+      startIndex: match.index,
+      endIndex: match.index + match[0].length,
+    });
+  }
+  
+  // Second pass: extract message text between headers
+  for (let i = 0; i < matches.length; i++) {
+    const current = matches[i];
+    const nextStart = matches[i + 1]?.startIndex ?? chunkText.length;
+    const messageText = chunkText.slice(current.endIndex, nextStart).trim();
+    
+    if (messageText) {
+      messages.push({
+        sender: current.sender,
+        text: messageText,
+        fullMatch: chunkText.slice(current.startIndex, nextStart),
+      });
+    }
+  }
+  
+  // If no structured messages found, return null
+  if (messages.length === 0) return null;
+  
+  // Find the message that best matches the query
+  let bestMatchIndex = -1;
+  let bestMatchScore = 0;
+  
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const msgLower = msg.text.toLowerCase();
+    
+    // Check for exact phrase match (highest priority)
+    if (msgLower.includes(queryLower)) {
+      bestMatchIndex = i;
+      bestMatchScore = 100;
+      break;
+    }
+    
+    // Check for word matches
+    let wordMatches = 0;
+    for (const word of queryWords) {
+      if (msgLower.includes(word.toLowerCase())) {
+        wordMatches++;
+      }
+    }
+    
+    if (wordMatches > bestMatchScore) {
+      bestMatchScore = wordMatches;
+      bestMatchIndex = i;
+    }
+  }
+  
+  if (bestMatchIndex === -1) {
+    // Fallback: return first message
+    return {
+      sender: messages[0].sender,
+      text: messages[0].text,
+    };
+  }
+  
+  const matchedMsg = messages[bestMatchIndex];
+  const contextMsg = bestMatchIndex > 0 ? messages[bestMatchIndex - 1] : null;
+  
+  return {
+    sender: matchedMsg.sender,
+    text: matchedMsg.text,
+    contextBefore: contextMsg ? `${contextMsg.sender}: ${contextMsg.text}` : undefined,
+  };
+}
+
+// Format the preview with clean message display
+function PreviewMessage({ 
+  chunkText, 
+  query, 
+  isSelected 
+}: { 
+  chunkText: string; 
+  query: string; 
+  isSelected: boolean;
+}) {
+  const extracted = extractMatchingMessage(chunkText, query);
+  
+  if (!extracted) {
+    // Fallback to raw text (truncated)
+    return (
+      <p className={cn(
+        "mt-1 text-sm line-clamp-2",
+        isSelected ? "text-white" : "text-gray-300"
+      )}>
+        {highlightMatches(chunkText.slice(0, 200), query)}
+      </p>
+    );
+  }
+  
+  const senderIsMe = extracted.sender.toLowerCase() === 'me' || 
+                     extracted.sender.toLowerCase().includes('shrey');
+  
+  return (
+    <div className="mt-1 space-y-0.5">
+      {/* Context line (previous message) */}
+      {extracted.contextBefore && (
+        <p className={cn(
+          "text-xs line-clamp-1",
+          isSelected ? "text-blue-200/70" : "text-gray-500"
+        )}>
+          {extracted.contextBefore}
+        </p>
+      )}
+      {/* Main matching message */}
+      <p className={cn(
+        "text-sm line-clamp-2",
+        isSelected ? "text-white" : "text-gray-300"
+      )}>
+        <span className={cn(
+          "font-medium",
+          isSelected 
+            ? "text-blue-100" 
+            : senderIsMe ? "text-blue-400" : "text-purple-400"
+        )}>
+          {extracted.sender}:
+        </span>
+        {" "}
+        {highlightMatches(extracted.text, query)}
+      </p>
+    </div>
+  );
+}
+
 // Format date like Spotlight
 function formatDate(dateStr: string): string {
   const date = new Date(dateStr);
@@ -758,12 +906,11 @@ export default function SpotlightSearch() {
                                 {formatDate(result.document.timestamp)}
                               </span>
                             </div>
-                            <p className={cn(
-                              "mt-1 text-sm line-clamp-2",
-                              selectedIndex === index ? "text-white" : "text-gray-300"
-                            )}>
-                              {highlightMatches(result.document.text, searchQuery)}
-                            </p>
+                            <PreviewMessage 
+                              chunkText={result.document.text}
+                              query={searchQuery}
+                              isSelected={selectedIndex === index}
+                            />
                           </div>
                         </div>
                       </div>

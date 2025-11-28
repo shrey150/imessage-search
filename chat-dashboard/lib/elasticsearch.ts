@@ -104,7 +104,8 @@ class ElasticsearchClient {
         script_score: {
           query: { match_all: {} },
           script: {
-            source: "cosineSimilarity(params.query_vector, 'text_embedding') + 1.0",
+            // Guard against documents without embeddings to prevent runtime errors
+            source: "doc['text_embedding'].size() != 0 ? cosineSimilarity(params.query_vector, 'text_embedding') + 1.0 : 0",
             params: { query_vector: queryEmbedding },
           },
         },
@@ -297,9 +298,16 @@ class ElasticsearchClient {
 
   /**
    * Spotlight search - optimized for instant search UI
-   * Combines phrase matching (boosted) with keyword search for best results
-   * Phrase matches rank higher, but partial keyword matches are also returned
-   * Results are sorted by timestamp (newest first) for chronological browsing
+   * 
+   * Sorting priority:
+   * 1. Exact phrase match (entire query as one string) - highest priority
+   * 2. Number of keyword matches (more matching words = higher rank)
+   * 3. Timestamp descending (newest first) - as tiebreaker
+   * 
+   * Uses function_score with multiple tiers:
+   * - Tier 1 (1M points): Exact phrase match
+   * - Tier 2 (100K points): All keywords match (AND)
+   * - Tier 3: BM25 natural scoring for relevance (handles partial matches)
    */
   async spotlightSearch(options: {
     query: string;
@@ -310,23 +318,58 @@ class ElasticsearchClient {
     const { query, filters, limit = 10, offset = 0 } = options;
 
     const filterClauses = this.buildFilterClauses(filters);
-    const words = query.trim().split(/\s+/);
+    const words = query.trim().split(/\s+/).filter(w => w.length > 0);
 
-    // Build a combined query that:
-    // 1. Boosts exact phrase matches heavily (most relevant)
-    // 2. Boosts matches where all words appear (very relevant)
-    // 3. Returns matches where any word appears (somewhat relevant)
-    const should: Array<Record<string, unknown>> = [
-      // Exact phrase match - highest boost
+    // Build function_score functions with clear priority tiers:
+    // - Exact phrase match: 1,000,000 points (always shows first)
+    // - All keywords match (AND): 100,000 points (shows before partial matches)
+    // - BM25 scoring adds natural relevance ranking within each tier
+    const functions: Array<Record<string, unknown>> = [
+      // Tier 1: Exact phrase match gets massive boost
       {
-        match_phrase: {
+        filter: { match_phrase: { text: query } },
+        weight: 1000000,
+      },
+      // Tier 2: All keywords matching (AND) gets high boost
+      {
+        filter: { 
+          match: { 
+            text: {
+              query: query,
+              operator: 'and',
+            }
+          } 
+        },
+        weight: 100000,
+      },
+    ];
+
+    // Tier 3: Each individual keyword match adds smaller boost
+    // This helps differentiate between "2 keywords match" vs "4 keywords match"
+    for (const word of words) {
+      // Skip very common words (stop words) - they don't add meaning
+      if (word.length <= 2 || ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'was', 'her', 'she', 'his', 'him', 'has', 'had', 'its'].includes(word.toLowerCase())) {
+        continue;
+      }
+      functions.push({
+        filter: { match: { text: word } },
+        weight: 1000,
+      });
+    }
+
+    // Base query: match any word (to get candidates)
+    // Use should clauses with varying boosts for BM25 scoring
+    const baseQueryShould: Array<Record<string, unknown>> = [
+      // Exact phrase match - highest BM25 boost
+      { 
+        match_phrase: { 
           text: {
             query: query,
             boost: 10.0,
-          },
-        },
+          }
+        } 
       },
-      // All keywords match (AND) - high boost
+      // All keywords match (AND) - high BM25 boost
       {
         match: {
           text: {
@@ -336,13 +379,13 @@ class ElasticsearchClient {
           },
         },
       },
-      // Any keyword match (OR) - base relevance
+      // Any keyword match (OR) with 50% minimum - base relevance
       {
         match: {
           text: {
             query: query,
             operator: 'or',
-            minimum_should_match: '50%',
+            minimum_should_match: '30%',
             boost: 1.0,
           },
         },
@@ -351,7 +394,7 @@ class ElasticsearchClient {
 
     // For single words, also add a prefix match for partial typing
     if (words.length === 1 && words[0].length >= 2) {
-      should.push({
+      baseQueryShould.push({
         prefix: {
           text: {
             value: words[0].toLowerCase(),
@@ -361,22 +404,32 @@ class ElasticsearchClient {
       });
     }
 
-    const boolQuery: Record<string, unknown> = {
-      should,
-      minimum_should_match: 1,
+    const baseQuery: Record<string, unknown> = {
+      bool: {
+        should: baseQueryShould,
+        minimum_should_match: 1,
+      },
     };
-    
+
     if (filterClauses.length > 0) {
-      boolQuery.filter = filterClauses;
+      (baseQuery.bool as Record<string, unknown>).filter = filterClauses;
     }
 
     const response = await this.client.search({
       index: INDEX_NAME,
-      query: { bool: boolQuery },
+      query: {
+        function_score: {
+          query: baseQuery,
+          functions,
+          score_mode: 'sum', // Sum all matching function weights
+          boost_mode: 'sum', // Add function score to BM25 score (for tie-breaking)
+        },
+      },
       size: limit,
       from: offset,
-      // Sort by timestamp descending (newest first)
+      // Sort by score first (tier + BM25), then timestamp as final tiebreaker
       sort: [
+        { _score: { order: 'desc' } },
         { timestamp: { order: 'desc' } },
       ],
       track_total_hits: true,

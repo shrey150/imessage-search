@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ChatSidebar } from "@/components/chat-sidebar";
+import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -30,6 +31,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <TooltipProvider>
+          <KeyboardShortcuts />
           <ChatSidebar>
             {children}
           </ChatSidebar>

@@ -232,6 +232,30 @@ export class StateManager {
     const row = this.db!.prepare(`SELECT COUNT(*) as count FROM indexed_chunks`).get() as { count: number };
     return row.count;
   }
+  
+  /**
+   * Get all chunk records (for migration scripts)
+   */
+  getAllChunkRecords(): Array<{ chunkHash: string; messageRowids: string; documentId: string; createdAt: number }> {
+    if (!this.db) this.open();
+    
+    const rows = this.db!.prepare(`
+      SELECT chunk_hash, message_rowids, qdrant_point_id as document_id, created_at
+      FROM indexed_chunks
+    `).all() as Array<{
+      chunk_hash: string;
+      message_rowids: string;
+      document_id: string;
+      created_at: number;
+    }>;
+    
+    return rows.map(row => ({
+      chunkHash: row.chunk_hash,
+      messageRowids: row.message_rowids,
+      documentId: row.document_id,
+      createdAt: row.created_at,
+    }));
+  }
 }
 
 // Singleton instance

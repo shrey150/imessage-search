@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { ChevronLeft, Loader2, X, ZoomIn, ZoomOut, RotateCw } from "lucide-react";
+import { ChevronLeft, Loader2, X, ZoomIn, ZoomOut, RotateCw, Play, Pause, Volume2, VolumeX, Maximize, SkipBack, SkipForward } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { processMessagesWithReactions, type Reaction } from "@/lib/reactions";
 import type { MessagesResponse, MessageWithReactions } from "@/app/api/messages/route";
@@ -88,6 +88,376 @@ function ImageLightbox({
       {/* Hint */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/50 text-sm">
         Double-click image or press Esc to close • Scroll or +/- to zoom • R to rotate
+      </div>
+    </div>
+  );
+}
+
+// Video Lightbox Component
+function VideoLightbox({ 
+  src, 
+  title, 
+  onClose 
+}: { 
+  src: string; 
+  title: string; 
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Format time as MM:SS
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Show controls temporarily
+  const showControlsTemporarily = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (isPlaying) {
+        setShowControls(false);
+      }
+    }, 3000);
+  }, [isPlaying]);
+
+  // Keyboard controls
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === " " || e.key === "k") {
+        e.preventDefault();
+        togglePlay();
+      }
+      if (e.key === "ArrowLeft") {
+        if (videoRef.current) {
+          videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
+        }
+      }
+      if (e.key === "ArrowRight") {
+        if (videoRef.current) {
+          videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 10);
+        }
+      }
+      if (e.key === "m") {
+        toggleMute();
+      }
+      if (e.key === "f") {
+        toggleFullscreen();
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setVolume(v => Math.min(1, v + 0.1));
+        if (videoRef.current) videoRef.current.volume = Math.min(1, volume + 0.1);
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setVolume(v => Math.max(0, v - 0.1));
+        if (videoRef.current) videoRef.current.volume = Math.max(0, volume - 0.1);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, duration, volume]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const togglePlay = () => {
+    if (videoRef.current) {
+      if (isPlaying) {
+        videoRef.current.pause();
+      } else {
+        videoRef.current.play();
+      }
+    }
+  };
+
+  const toggleMute = () => {
+    if (videoRef.current) {
+      videoRef.current.muted = !isMuted;
+      setIsMuted(!isMuted);
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    if (!document.fullscreenElement) {
+      await videoRef.current?.requestFullscreen();
+      setIsFullscreen(true);
+    } else {
+      await document.exitFullscreen();
+      setIsFullscreen(false);
+    }
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTime = parseFloat(e.target.value);
+    if (videoRef.current) {
+      videoRef.current.currentTime = newTime;
+    }
+    setCurrentTime(newTime);
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVolume = parseFloat(e.target.value);
+    setVolume(newVolume);
+    if (videoRef.current) {
+      videoRef.current.volume = newVolume;
+    }
+    setIsMuted(newVolume === 0);
+  };
+
+  const skip = (seconds: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = Math.max(0, Math.min(duration, videoRef.current.currentTime + seconds));
+    }
+  };
+
+  return (
+    <div 
+      className="fixed inset-0 z-[100] bg-black flex items-center justify-center"
+      onClick={onClose}
+      onMouseMove={showControlsTemporarily}
+    >
+      {/* Close button (always visible) */}
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 z-20 p-2 rounded-full bg-black/60 hover:bg-black/80 text-white transition-colors"
+        title="Close (Esc)"
+      >
+        <X className="h-6 w-6" />
+      </button>
+
+      {/* Title */}
+      <div className={cn(
+        "absolute top-4 left-4 z-20 text-white/80 text-sm font-medium transition-opacity duration-300",
+        showControls ? "opacity-100" : "opacity-0"
+      )}>
+        {title}
+      </div>
+
+      {/* Video container */}
+      <div 
+        className="relative max-w-[90vw] max-h-[85vh] flex items-center justify-center"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <video
+          ref={videoRef}
+          src={src}
+          className="max-w-full max-h-[85vh] rounded-lg"
+          onClick={togglePlay}
+          onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime || 0)}
+          onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onEnded={() => setIsPlaying(false)}
+          playsInline
+        />
+
+        {/* Play/Pause overlay button (center) */}
+        <button
+          onClick={togglePlay}
+          className={cn(
+            "absolute inset-0 flex items-center justify-center transition-opacity duration-300",
+            !isPlaying || showControls ? "opacity-100" : "opacity-0"
+          )}
+        >
+          <div className="p-4 rounded-full bg-black/50 backdrop-blur-sm">
+            {isPlaying ? (
+              <Pause className="h-12 w-12 text-white" />
+            ) : (
+              <Play className="h-12 w-12 text-white ml-1" />
+            )}
+          </div>
+        </button>
+
+        {/* Controls bar */}
+        <div className={cn(
+          "absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-4 pt-12 transition-opacity duration-300",
+          showControls ? "opacity-100" : "opacity-0"
+        )}>
+          {/* Progress bar */}
+          <div className="mb-3">
+            <input
+              type="range"
+              min={0}
+              max={duration || 100}
+              value={currentTime}
+              onChange={handleSeek}
+              className="w-full h-1 bg-white/30 rounded-full appearance-none cursor-pointer
+                [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 
+                [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:cursor-pointer
+                [&::-webkit-slider-thumb]:shadow-lg hover:[&::-webkit-slider-thumb]:scale-125 [&::-webkit-slider-thumb]:transition-transform"
+              style={{
+                background: `linear-gradient(to right, #007AFF ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.3) ${(currentTime / (duration || 1)) * 100}%)`
+              }}
+            />
+          </div>
+
+          {/* Control buttons */}
+          <div className="flex items-center gap-4">
+            {/* Play/Pause */}
+            <button onClick={togglePlay} className="text-white hover:text-white/80 transition-colors">
+              {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6" />}
+            </button>
+
+            {/* Skip backward */}
+            <button onClick={() => skip(-10)} className="text-white hover:text-white/80 transition-colors" title="Back 10s">
+              <SkipBack className="h-5 w-5" />
+            </button>
+
+            {/* Skip forward */}
+            <button onClick={() => skip(10)} className="text-white hover:text-white/80 transition-colors" title="Forward 10s">
+              <SkipForward className="h-5 w-5" />
+            </button>
+
+            {/* Time display */}
+            <span className="text-white text-sm font-mono">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+
+            <div className="flex-1" />
+
+            {/* Volume control */}
+            <div className="flex items-center gap-2 group">
+              <button onClick={toggleMute} className="text-white hover:text-white/80 transition-colors">
+                {isMuted || volume === 0 ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.1}
+                value={isMuted ? 0 : volume}
+                onChange={handleVolumeChange}
+                className="w-20 h-1 bg-white/30 rounded-full appearance-none cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity
+                  [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 
+                  [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full"
+              />
+            </div>
+
+            {/* Fullscreen */}
+            <button onClick={toggleFullscreen} className="text-white hover:text-white/80 transition-colors" title="Fullscreen (F)">
+              <Maximize className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Keyboard hints */}
+      <div className={cn(
+        "absolute bottom-4 left-1/2 -translate-x-1/2 text-white/40 text-xs transition-opacity duration-300",
+        showControls ? "opacity-100" : "opacity-0"
+      )}>
+        Space: Play/Pause • ←/→: Seek 10s • ↑/↓: Volume • M: Mute • F: Fullscreen • Esc: Close
+      </div>
+    </div>
+  );
+}
+
+// Reaction Details Modal Component
+function ReactionDetailsModal({
+  reactions,
+  onClose,
+}: {
+  reactions: Reaction[];
+  onClose: () => void;
+}) {
+  // Close on escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  // Group reactions by emoji
+  const groupedReactions = reactions.reduce((acc, r) => {
+    if (!acc[r.emoji]) acc[r.emoji] = [];
+    acc[r.emoji].push(r);
+    return acc;
+  }, {} as Record<string, Reaction[]>);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white dark:bg-[#2C2C2E] rounded-2xl shadow-xl max-w-sm w-full max-h-[60vh] overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+          <h3 className="text-[17px] font-semibold text-center text-gray-900 dark:text-white">
+            Reactions
+          </h3>
+        </div>
+
+        {/* Reaction list */}
+        <div className="overflow-y-auto max-h-[calc(60vh-56px)]">
+          {Object.entries(groupedReactions).map(([emoji, reactionGroup]) => (
+            <div key={emoji} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
+              {/* Emoji header */}
+              <div className="px-4 py-2 bg-gray-50 dark:bg-[#1C1C1E] flex items-center gap-2">
+                <span className="text-2xl">{emoji}</span>
+                <span className="text-sm text-gray-500">{reactionGroup.length}</span>
+              </div>
+              
+              {/* People who reacted */}
+              {reactionGroup.map((r, i) => (
+                <div
+                  key={`${r.sender}-${i}`}
+                  className="px-4 py-3 flex items-center gap-3"
+                >
+                  {/* Avatar */}
+                  <div
+                    className={cn(
+                      "w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-medium",
+                      r.isMe ? "bg-[#007AFF]" : "bg-gradient-to-br from-purple-500 to-pink-500"
+                    )}
+                  >
+                    {getInitials(r.isMe ? "Me" : r.sender)}
+                  </div>
+                  
+                  {/* Name */}
+                  <span className="text-[15px] text-gray-900 dark:text-white">
+                    {r.isMe ? "You" : r.sender}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* Close button */}
+        <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700">
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 bg-gray-100 dark:bg-[#3A3A3C] rounded-xl text-[17px] font-medium text-[#007AFF] hover:bg-gray-200 dark:hover:bg-[#4A4A4C] transition-colors"
+          >
+            Done
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -236,6 +606,8 @@ function MessageBubble({
   searchQuery,
   isAnchor,
   onImageDoubleClick,
+  onVideoDoubleClick,
+  onReactionClick,
 }: {
   message: MessageWithReactions;
   isGrouped: boolean;
@@ -245,6 +617,8 @@ function MessageBubble({
   searchQuery: string;
   isAnchor: boolean;
   onImageDoubleClick: (src: string, alt: string) => void;
+  onVideoDoubleClick: (src: string, title: string) => void;
+  onReactionClick: (reactions: Reaction[]) => void;
 }) {
   const hasReactions = message.reactions && message.reactions.length > 0;
 
@@ -292,13 +666,14 @@ function MessageBubble({
           // Strip Object Replacement Character (U+FFFC) used by iMessage for attachment placeholders
           const cleanText = message.text?.replace(/\uFFFC/g, '').trim();
           const hasText = cleanText && cleanText.length > 0;
+          const hasVideoAttachments = message.attachments.some(a => a.isVideo);
           return (
             <div className={cn(
               "overflow-hidden",
-              hasText && "mb-1", // Only add margin if there's text below
+              (hasText || hasVideoAttachments) && "mb-1", // Only add margin if there's text or video below
               message.isFromMe
-                ? cn("rounded-[18px]", isLastInGroup && !hasText && "rounded-br-[4px]")
-                : cn("rounded-[18px]", isLastInGroup && !hasText && "rounded-bl-[4px]"),
+                ? cn("rounded-[18px]", isLastInGroup && !hasText && !hasVideoAttachments && "rounded-br-[4px]")
+                : cn("rounded-[18px]", isLastInGroup && !hasText && !hasVideoAttachments && "rounded-bl-[4px]"),
               isAnchor && "ring-2 ring-yellow-400 ring-offset-2 ring-offset-[#000]"
             )}>
               {message.attachments.filter(a => a.isImage).map((attachment) => {
@@ -314,6 +689,50 @@ function MessageBubble({
                     onDoubleClick={() => onImageDoubleClick(imgSrc, imgAlt)}
                     title="Double-click to expand"
                   />
+                );
+              })}
+            </div>
+          );
+        })()}
+
+        {/* Video attachments */}
+        {message.attachments && message.attachments.filter(a => a.isVideo).length > 0 && (() => {
+          const cleanText = message.text?.replace(/\uFFFC/g, '').trim();
+          const hasText = cleanText && cleanText.length > 0;
+          return (
+            <div className={cn(
+              "overflow-hidden",
+              hasText && "mb-1",
+              message.isFromMe
+                ? cn("rounded-[18px]", isLastInGroup && !hasText && "rounded-br-[4px]")
+                : cn("rounded-[18px]", isLastInGroup && !hasText && "rounded-bl-[4px]"),
+              isAnchor && "ring-2 ring-yellow-400 ring-offset-2 ring-offset-[#000]"
+            )}>
+              {message.attachments.filter(a => a.isVideo).map((attachment) => {
+                const videoSrc = `/api/video?path=${encodeURIComponent(attachment.filename)}`;
+                const videoTitle = attachment.transferName || "Video";
+                return (
+                  <div 
+                    key={attachment.rowid} 
+                    className="relative group cursor-pointer"
+                    onDoubleClick={() => onVideoDoubleClick(videoSrc, videoTitle)}
+                    title="Double-click to open in full player"
+                  >
+                    <video
+                      src={videoSrc}
+                      className="max-w-full max-h-[300px] object-contain bg-black"
+                      controls
+                      controlsList="nodownload"
+                      playsInline
+                      preload="metadata"
+                    />
+                    {/* Overlay hint on hover */}
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                      <div className="px-3 py-1.5 bg-black/70 rounded-full text-white text-xs font-medium">
+                        Double-click for full player
+                      </div>
+                    </div>
+                  </div>
                 );
               })}
             </div>
@@ -355,6 +774,8 @@ function MessageBubble({
               <div
                 className={cn(
                   "relative px-3 py-2 wrap-break-word w-fit",
+                  // Alignment - right for sent, left for received
+                  message.isFromMe && "ml-auto",
                   // Colors
                   message.isFromMe
                     ? "bg-[#007AFF] text-white"
@@ -403,7 +824,10 @@ function MessageBubble({
               message.isFromMe ? "right-2" : "left-2"
             )}
           >
-            <div className="flex items-center gap-0.5 bg-white dark:bg-[#2C2C2E] rounded-full px-1.5 py-0.5 shadow-sm border border-gray-200 dark:border-gray-700">
+            <button
+              onClick={() => onReactionClick(message.reactions)}
+              className="flex items-center gap-0.5 bg-white dark:bg-[#2C2C2E] rounded-full px-1.5 py-0.5 shadow-sm border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-[#3A3A3C] transition-colors cursor-pointer"
+            >
               {/* Group same reactions together */}
               {Object.entries(
                 message.reactions.reduce(
@@ -421,7 +845,7 @@ function MessageBubble({
                   )}
                 </span>
               ))}
-            </div>
+            </button>
           </div>
         )}
 
@@ -482,6 +906,8 @@ export default function ConversationPage() {
   const [anchorRowid, setAnchorRowid] = useState<number | null>(null);
   const [hasScrolledToAnchor, setHasScrolledToAnchor] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+  const [lightboxVideo, setLightboxVideo] = useState<{ src: string; title: string } | null>(null);
+  const [reactionDetails, setReactionDetails] = useState<Reaction[] | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
@@ -771,6 +1197,8 @@ export default function ConversationPage() {
                     searchQuery={searchQuery}
                     isAnchor={message.rowid === anchorRowid}
                     onImageDoubleClick={(src, alt) => setLightboxImage({ src, alt })}
+                    onVideoDoubleClick={(src, title) => setLightboxVideo({ src, title })}
+                    onReactionClick={(reactions) => setReactionDetails(reactions)}
                   />
                 </div>
               );
@@ -798,6 +1226,23 @@ export default function ConversationPage() {
           src={lightboxImage.src}
           alt={lightboxImage.alt}
           onClose={() => setLightboxImage(null)}
+        />
+      )}
+
+      {/* Video Lightbox */}
+      {lightboxVideo && (
+        <VideoLightbox
+          src={lightboxVideo.src}
+          title={lightboxVideo.title}
+          onClose={() => setLightboxVideo(null)}
+        />
+      )}
+
+      {/* Reaction Details Modal */}
+      {reactionDetails && (
+        <ReactionDetailsModal
+          reactions={reactionDetails}
+          onClose={() => setReactionDetails(null)}
         />
       )}
     </div>
