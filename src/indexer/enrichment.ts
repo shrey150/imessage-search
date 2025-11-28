@@ -123,9 +123,17 @@ function isDM(participants: string[], groupName: string | null): boolean {
 }
 
 /**
+ * Options for enriching a chunk with additional data
+ */
+export interface EnrichmentOptions {
+  hasImage?: boolean;
+  imageEmbedding?: number[];
+}
+
+/**
  * Enrich a message chunk with derived fields
  */
-export function enrichChunk(chunk: MessageChunk): EnrichedChunk {
+export function enrichChunk(chunk: MessageChunk, options: EnrichmentOptions = {}): EnrichedChunk {
   const startDate = new Date(chunk.startTs * 1000);
   const endDate = new Date(chunk.endTs * 1000);
   
@@ -156,9 +164,10 @@ export function enrichChunk(chunk: MessageChunk): EnrichedChunk {
     day_of_week: DAYS_OF_WEEK[startDate.getDay()],
     hour_of_day: startDate.getHours(),
     
-    // Attachments / Images (will be enriched separately)
-    has_attachment: false,
-    has_image: false,
+    // Attachments / Images
+    has_attachment: options.hasImage || false,
+    has_image: options.hasImage || false,
+    image_embedding: options.imageEmbedding,
     
     // Chunk metadata
     chunk_id: chunk.id,
@@ -194,6 +203,7 @@ export function toESDocument(
     hour_of_day: enriched.hour_of_day,
     has_attachment: enriched.has_attachment,
     has_image: enriched.has_image,
+    image_embedding: enriched.image_embedding,
     chunk_id: enriched.chunk_id,
     message_count: enriched.message_count,
     start_timestamp: enriched.start_timestamp,
@@ -204,7 +214,7 @@ export function toESDocument(
 /**
  * Batch enrich multiple chunks
  */
-export function enrichChunks(chunks: MessageChunk[]): EnrichedChunk[] {
-  return chunks.map(enrichChunk);
+export function enrichChunks(chunks: MessageChunk[], optionsArray?: EnrichmentOptions[]): EnrichedChunk[] {
+  return chunks.map((chunk, i) => enrichChunk(chunk, optionsArray?.[i]));
 }
 

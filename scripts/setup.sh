@@ -55,7 +55,7 @@ fi
 echo ""
 echo "Setup complete! Next steps:"
 echo "  1. Add your OPENAI_API_KEY to .env"
-echo "  2. Run 'pnpm qdrant:start' to start Qdrant"
+echo "  2. Run 'pnpm es:start' to start Elasticsearch"
 echo "  3. Run 'pnpm index' to index your messages"
-echo "  4. Run 'pnpm dev' to start the MCP server"
+echo "  4. Run 'pnpm start' to start the MCP server"
 

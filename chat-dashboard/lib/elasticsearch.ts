@@ -299,13 +299,15 @@ class ElasticsearchClient {
    * Spotlight search - optimized for instant search UI
    * Combines phrase matching (boosted) with keyword search for best results
    * Phrase matches rank higher, but partial keyword matches are also returned
+   * Results are sorted by timestamp (newest first) for chronological browsing
    */
   async spotlightSearch(options: {
     query: string;
     filters?: SearchFilters;
     limit?: number;
-  }): Promise<SearchResult[]> {
-    const { query, filters, limit = 10 } = options;
+    offset?: number;
+  }): Promise<{ results: SearchResult[]; total: number }> {
+    const { query, filters, limit = 10, offset = 0 } = options;
 
     const filterClauses = this.buildFilterClauses(filters);
     const words = query.trim().split(/\s+/);
@@ -372,14 +374,27 @@ class ElasticsearchClient {
       index: INDEX_NAME,
       query: { bool: boolQuery },
       size: limit,
+      from: offset,
+      // Sort by timestamp descending (newest first)
+      sort: [
+        { timestamp: { order: 'desc' } },
+      ],
+      track_total_hits: true,
       _source: { excludes: ['text_embedding', 'image_embedding'] },
     });
 
-    return response.hits.hits.map((hit) => ({
-      id: hit._id!,
-      score: hit._score || 0,
-      document: hit._source as MessageDocument,
-    }));
+    const total = typeof response.hits.total === 'number' 
+      ? response.hits.total 
+      : response.hits.total?.value || 0;
+
+    return {
+      results: response.hits.hits.map((hit) => ({
+        id: hit._id!,
+        score: hit._score || 0,
+        document: hit._source as MessageDocument,
+      })),
+      total,
+    };
   }
 
   async getStats(): Promise<{ documentCount: number } | null> {

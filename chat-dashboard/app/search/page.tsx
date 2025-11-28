@@ -2,8 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { Search, MessageSquare, Image as ImageIcon, X, ChevronLeft } from "lucide-react";
+import { Search, MessageSquare, Image as ImageIcon, X, ChevronLeft, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { parseReaction, type Reaction } from "@/lib/reactions";
+import { extractUrls, isUrlOnlyMessage, LinkPreview } from "@/components/link-preview";
 
 interface SearchResult {
   id: string;
@@ -13,6 +15,7 @@ interface SearchResult {
     sender: string;
     sender_is_me: boolean;
     participants: string[];
+    chat_id: string;
     chat_name: string | null;
     is_dm: boolean;
     is_group_chat: boolean;
@@ -25,12 +28,8 @@ interface SearchResponse {
   messages: SearchResult[];
   images: SearchResult[];
   query?: string;
-}
-
-interface Reaction {
-  emoji: string;
-  sender: string;
-  isMe: boolean;
+  total?: number;
+  hasMore?: boolean;
 }
 
 interface ParsedMessage {
@@ -38,41 +37,6 @@ interface ParsedMessage {
   text: string;
   isMe: boolean;
   reactions?: Reaction[];
-}
-
-// Reaction type mappings - handles straight quotes, curly quotes, and partial quotes
-// Quote characters: " " " ' ' (straight and curly)
-const QUOTE_PATTERN = '["""\u2018\u2019\u201C\u201D\']';
-
-const REACTION_PATTERNS: { pattern: RegExp; emoji: string }[] = [
-  // Patterns with quotes (straight or curly)
-  { pattern: new RegExp(`^Loved\\s+${QUOTE_PATTERN}(.+?)${QUOTE_PATTERN}?\\.?\\.?\\.?$`, 'i'), emoji: '❤️' },
-  { pattern: new RegExp(`^Liked\\s+${QUOTE_PATTERN}(.+?)${QUOTE_PATTERN}?\\.?\\.?\\.?$`, 'i'), emoji: '👍' },
-  { pattern: new RegExp(`^Disliked\\s+${QUOTE_PATTERN}(.+?)${QUOTE_PATTERN}?\\.?\\.?\\.?$`, 'i'), emoji: '👎' },
-  { pattern: new RegExp(`^Laughed at\\s+${QUOTE_PATTERN}(.+?)${QUOTE_PATTERN}?\\.?\\.?\\.?$`, 'i'), emoji: '😂' },
-  { pattern: new RegExp(`^Emphasized\\s+${QUOTE_PATTERN}(.+?)${QUOTE_PATTERN}?\\.?\\.?\\.?$`, 'i'), emoji: '‼️' },
-  { pattern: new RegExp(`^Questioned\\s+${QUOTE_PATTERN}(.+?)${QUOTE_PATTERN}?\\.?\\.?\\.?$`, 'i'), emoji: '❓' },
-  // Simple patterns without quotes
-  { pattern: /^Loved$/i, emoji: '❤️' },
-  { pattern: /^Liked$/i, emoji: '👍' },
-  { pattern: /^Like$/i, emoji: '👍' },
-  { pattern: /^Disliked$/i, emoji: '👎' },
-  { pattern: /^Laughed$/i, emoji: '😂' },
-  { pattern: /^Emphasized$/i, emoji: '‼️' },
-  { pattern: /^Questioned$/i, emoji: '❓' },
-];
-
-// Check if text is a reaction and return the original message text (if any)
-function parseReaction(text: string): { emoji: string; originalText: string | null } | null {
-  const trimmed = text.trim();
-  for (const { pattern, emoji } of REACTION_PATTERNS) {
-    const match = trimmed.match(pattern);
-    if (match) {
-      // match[1] will be the quoted text if it exists, otherwise undefined
-      return { emoji, originalText: match[1] || null };
-    }
-  }
-  return null;
 }
 
 // Parse chunk text into individual messages
@@ -302,7 +266,26 @@ function getAvatarColor(name: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
-// Conversation Viewer Component
+// Helper to get Unix timestamp from document timestamp
+function getUnixTimestamp(timestamp: string): number {
+  return Math.floor(new Date(timestamp).getTime() / 1000);
+}
+
+// Navigate to full conversation view
+function useConversationNavigation() {
+  const router = useRouter();
+  
+  const navigateToConversation = useCallback((result: SearchResult, searchQuery: string = "") => {
+    const chatId = encodeURIComponent(result.document.chat_id);
+    const timestamp = getUnixTimestamp(result.document.timestamp);
+    const queryParam = searchQuery ? `&q=${encodeURIComponent(searchQuery)}` : "";
+    router.push(`/conversation/${chatId}?t=${timestamp}${queryParam}`);
+  }, [router]);
+  
+  return navigateToConversation;
+}
+
+// Conversation Viewer Component (Preview Modal)
 function ConversationViewer({ 
   result, 
   onClose,
@@ -313,6 +296,7 @@ function ConversationViewer({
   searchQuery?: string;
 }) {
   const router = useRouter();
+  const navigateToConversation = useConversationNavigation();
   const messages = parseChunkToMessages(result.document.text, result.document.participants);
   const chatTitle = result.document.chat_name || result.document.participants.join(", ");
 
@@ -322,6 +306,10 @@ function ConversationViewer({
 
   const handleBackdropClick = () => {
     router.push("/search");
+  };
+
+  const handleOpenFullConversation = () => {
+    navigateToConversation(result, searchQuery);
   };
 
   return (
@@ -391,22 +379,61 @@ function ConversationViewer({
                 "relative max-w-[85%]",
                 msg.isMe ? "ml-auto" : "mr-auto"
               )}>
-                <div className={cn(
-                  "rounded-2xl px-4 py-2.5",
-                  msg.isMe 
-                    ? "bg-blue-500 text-white rounded-br-md" 
-                    : "bg-[#3a3a3c] text-white rounded-bl-md"
-                )}>
-                  {/* Sender name for group chats */}
-                  {!msg.isMe && result.document.is_group_chat && (
-                    <div className="text-xs text-gray-400 mb-1 font-medium">
-                      {msg.sender}
-                    </div>
-                  )}
-                  <p className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-                    {highlightMatches(msg.text, searchQuery)}
-                  </p>
-                </div>
+                {(() => {
+                  const urls = extractUrls(msg.text);
+                  const primaryUrl = urls[0];
+                  const isUrlOnly = isUrlOnlyMessage(msg.text);
+
+                  // URL-only message: show just the link preview
+                  if (isUrlOnly && primaryUrl) {
+                    return (
+                      <LinkPreview 
+                        url={primaryUrl} 
+                        isFromMe={msg.isMe}
+                        className={cn(
+                          msg.isMe ? "rounded-br-md" : "rounded-bl-md"
+                        )}
+                      />
+                    );
+                  }
+
+                  // Regular message with optional link preview below
+                  return (
+                    <>
+                      <div className={cn(
+                        "rounded-2xl px-4 py-2.5",
+                        msg.isMe 
+                          ? "bg-blue-500 text-white" 
+                          : "bg-[#3a3a3c] text-white",
+                        msg.isMe 
+                          ? (!primaryUrl ? "rounded-br-md" : "")
+                          : (!primaryUrl ? "rounded-bl-md" : "")
+                      )}>
+                        {/* Sender name for group chats */}
+                        {!msg.isMe && result.document.is_group_chat && (
+                          <div className="text-xs text-gray-400 mb-1 font-medium">
+                            {msg.sender}
+                          </div>
+                        )}
+                        <p className="text-[15px] leading-relaxed whitespace-pre-wrap wrap-break-word">
+                          {highlightMatches(msg.text, searchQuery)}
+                        </p>
+                      </div>
+                      
+                      {/* Link preview for first URL */}
+                      {primaryUrl && (
+                        <LinkPreview 
+                          url={primaryUrl} 
+                          isFromMe={msg.isMe}
+                          className={cn(
+                            "mt-1",
+                            msg.isMe ? "rounded-br-md" : "rounded-bl-md"
+                          )}
+                        />
+                      )}
+                    </>
+                  );
+                })()}
                 
                 {/* Reactions */}
                 {msg.reactions && msg.reactions.length > 0 && (
@@ -432,6 +459,13 @@ function ConversationViewer({
 
         {/* Footer */}
         <div className="bg-[#2c2c2e] px-4 py-3 border-t border-white/10">
+          <button
+            onClick={handleOpenFullConversation}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-xl transition-colors mb-2"
+          >
+            <ExternalLink className="h-4 w-4" />
+            Open Full Conversation
+          </button>
           <div className="text-center text-xs text-gray-500">
             {result.document.participants.length} participants · {messages.length} messages in chunk
           </div>
@@ -441,17 +475,24 @@ function ConversationViewer({
   );
 }
 
+const PAGE_SIZE = 20;
+
 export default function SpotlightSearch() {
   const searchParams = useSearchParams();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResponse>({ messages: [], images: [] });
   const [searchQuery, setSearchQuery] = useState(""); // The query that was actually searched
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalResults, setTotalResults] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [viewingResult, setViewingResult] = useState<SearchResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const initialSearchDone = useRef(false);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+  const resultsContainerRef = useRef<HTMLDivElement>(null);
 
   // Handle initial query from URL params or direct chunk link
   useEffect(() => {
@@ -493,11 +534,13 @@ export default function SpotlightSearch() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [viewingResult]);
 
-  // Debounced search
+  // Debounced search - resets results
   const performSearch = useCallback(async (inputQuery: string) => {
     if (!inputQuery.trim()) {
       setResults({ messages: [], images: [] });
       setSearchQuery("");
+      setHasMore(false);
+      setTotalResults(0);
       return;
     }
 
@@ -506,7 +549,7 @@ export default function SpotlightSearch() {
       const response = await fetch("/api/spotlight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: inputQuery }),
+        body: JSON.stringify({ query: inputQuery, offset: 0, limit: PAGE_SIZE }),
       });
 
       if (response.ok) {
@@ -514,6 +557,8 @@ export default function SpotlightSearch() {
         setResults(data);
         setSearchQuery(data.query || inputQuery); // Store the searched query for highlighting
         setSelectedIndex(0);
+        setHasMore(data.hasMore || false);
+        setTotalResults(data.total || 0);
       }
     } catch (error) {
       console.error("Search error:", error);
@@ -521,6 +566,60 @@ export default function SpotlightSearch() {
       setIsLoading(false);
     }
   }, []);
+
+  // Load more results for infinite scroll
+  const loadMore = useCallback(async () => {
+    if (isLoadingMore || !hasMore || !searchQuery.trim()) return;
+
+    setIsLoadingMore(true);
+    try {
+      const response = await fetch("/api/spotlight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          query: searchQuery, 
+          offset: results.messages.length, 
+          limit: PAGE_SIZE 
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setResults(prev => ({
+          ...prev,
+          messages: [...prev.messages, ...data.messages],
+        }));
+        setHasMore(data.hasMore || false);
+      }
+    } catch (error) {
+      console.error("Load more error:", error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, hasMore, searchQuery, results.messages.length]);
+
+  // Intersection Observer for infinite scroll
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !isLoadingMore && !isLoading) {
+          loadMore();
+        }
+      },
+      { threshold: 0.1, rootMargin: '100px' }
+    );
+
+    const loadMoreElement = loadMoreRef.current;
+    if (loadMoreElement) {
+      observer.observe(loadMoreElement);
+    }
+
+    return () => {
+      if (loadMoreElement) {
+        observer.unobserve(loadMoreElement);
+      }
+    };
+  }, [hasMore, isLoadingMore, isLoading, loadMore]);
 
   // Trigger search when query changes from URL params
   useEffect(() => {
@@ -543,6 +642,9 @@ export default function SpotlightSearch() {
     }, 150);
   };
 
+  // Navigate to full conversation
+  const navigateToConversation = useConversationNavigation();
+
   // Keyboard navigation
   const handleKeyDown = (e: React.KeyboardEvent) => {
     const totalResults = results.messages.length + results.images.length;
@@ -555,7 +657,13 @@ export default function SpotlightSearch() {
       setSelectedIndex((prev) => Math.max(prev - 1, 0));
     } else if (e.key === "Enter" && results.messages[selectedIndex]) {
       e.preventDefault();
-      setViewingResult(results.messages[selectedIndex]);
+      if (e.metaKey || e.ctrlKey) {
+        // Cmd/Ctrl+Enter: Go directly to full conversation
+        navigateToConversation(results.messages[selectedIndex], searchQuery);
+      } else {
+        // Enter: Show preview modal
+        setViewingResult(results.messages[selectedIndex]);
+      }
     }
   };
 
@@ -597,13 +705,15 @@ export default function SpotlightSearch() {
 
           {/* Results */}
           {hasResults && (
-            <div className="max-h-[70vh] overflow-y-auto">
+            <div ref={resultsContainerRef} className="max-h-[70vh] overflow-y-auto">
               {/* Messages Section */}
               {results.messages.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between px-4 py-2 text-sm">
                     <span className="font-semibold text-white">Messages</span>
-                    <span className="text-gray-400">›</span>
+                    <span className="text-gray-400">
+                      {totalResults > 0 && `${results.messages.length} of ${totalResults.toLocaleString()}`}
+                    </span>
                   </div>
 
                   {results.messages.map((result, index) => {
@@ -615,7 +725,7 @@ export default function SpotlightSearch() {
                     
                     return (
                       <div
-                        key={result.id}
+                        key={`${result.id}-${index}`}
                         onClick={() => setViewingResult(result)}
                         className={cn(
                           "px-4 py-3 cursor-pointer transition-colors",
@@ -659,6 +769,27 @@ export default function SpotlightSearch() {
                       </div>
                     );
                   })}
+
+                  {/* Infinite scroll sentinel */}
+                  {hasMore && (
+                    <div ref={loadMoreRef} className="px-4 py-6 flex justify-center">
+                      {isLoadingMore ? (
+                        <div className="flex items-center gap-2 text-gray-400">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-400 border-t-transparent" />
+                          <span className="text-sm">Loading more...</span>
+                        </div>
+                      ) : (
+                        <span className="text-sm text-gray-500">Scroll for more results</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* End of results indicator */}
+                  {!hasMore && results.messages.length > 0 && totalResults > PAGE_SIZE && (
+                    <div className="px-4 py-4 text-center text-sm text-gray-500 border-t border-white/5">
+                      Showing all {results.messages.length.toLocaleString()} matching messages
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -713,7 +844,9 @@ export default function SpotlightSearch() {
           <span className="px-2 py-1 rounded bg-gray-800 mr-2">↑↓</span>
           Navigate
           <span className="ml-4 px-2 py-1 rounded bg-gray-800 mr-2">⏎</span>
-          Open
+          Preview
+          <span className="ml-4 px-2 py-1 rounded bg-gray-800 mr-2">⌘⏎</span>
+          Full Chat
           <span className="ml-4 px-2 py-1 rounded bg-gray-800 mr-2">esc</span>
           Close
         </div>

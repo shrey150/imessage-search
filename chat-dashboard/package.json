@@ -27,6 +27,7 @@
     "@radix-ui/react-use-controllable-state": "^1.2.2",
     "@xyflow/react": "^12.9.3",
     "ai": "^5.0.104",
+    "better-sqlite3": "^11.7.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -39,6 +40,7 @@
     "openai": "^6.9.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "sharp": "^0.34.5",
     "shiki": "^3.17.0",
     "streamdown": "^1.6.8",
     "tailwind-merge": "^3.4.0",
@@ -48,6 +50,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

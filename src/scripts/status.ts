@@ -31,6 +31,17 @@ async function main() {
     }
     console.log('');
     
+    // Images info
+    console.log('🖼️  Image Attachments');
+    console.log('─────────────────────────────────────────');
+    if (status.imageStats) {
+      console.log(`  Total attachments:  ${status.imageStats.totalAttachments.toLocaleString()}`);
+      console.log(`  Image attachments:  ${status.imageStats.imageAttachments.toLocaleString()}`);
+    } else {
+      console.log('  ⚠️  Cannot read attachments');
+    }
+    console.log('');
+    
     // Indexing state
     console.log('📊 Indexing State');
     console.log('─────────────────────────────────────────');

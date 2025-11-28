@@ -4,9 +4,8 @@
  */
 
 import { z } from 'zod';
-import { spawn } from 'child_process';
 import { getElasticsearchDB, SearchResult } from '../db/elasticsearch.js';
-import { getQueryParser } from './query-parser.js';
+import { getCLIPClient } from '../embeddings/clip.js';
 
 // Input schema for text-to-image search
 export const imageSearchSchema = z.object({
@@ -21,75 +20,14 @@ export const imageSearchSchema = z.object({
 export type ImageSearchInput = z.infer<typeof imageSearchSchema>;
 
 /**
- * Generate CLIP text embedding using Python
- * This is used for text-to-image search
- */
-async function getClipTextEmbedding(text: string): Promise<number[] | null> {
-  return new Promise((resolve) => {
-    const pythonScript = `
-import sys
-import json
-import torch
-from transformers import CLIPModel, CLIPProcessor
-
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-text = sys.argv[1]
-inputs = processor(text=[text], return_tensors="pt", padding=True)
-
-with torch.no_grad():
-    text_features = model.get_text_features(**inputs)
-    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
-embedding = text_features.cpu().numpy().flatten().tolist()
-print(json.dumps(embedding))
-`;
-
-    const process = spawn('python3', ['-c', pythonScript, text]);
-    
-    let stdout = '';
-    let stderr = '';
-    
-    process.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-    
-    process.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-    
-    process.on('close', (code) => {
-      if (code !== 0) {
-        console.error('CLIP embedding error:', stderr);
-        resolve(null);
-        return;
-      }
-      
-      try {
-        const embedding = JSON.parse(stdout.trim());
-        resolve(embedding);
-      } catch (e) {
-        console.error('Failed to parse CLIP embedding:', e);
-        resolve(null);
-      }
-    });
-    
-    process.on('error', (err) => {
-      console.error('Failed to run CLIP:', err);
-      resolve(null);
-    });
-  });
-}
-
-/**
- * Execute image search
+ * Execute image search using CLIP text-to-image embeddings
  */
 export async function imageSearch(input: ImageSearchInput): Promise<SearchResult[]> {
   const { query, sender, chatName, startDate, endDate, limit } = input;
   
   // Generate CLIP text embedding for the query
-  const imageEmbedding = await getClipTextEmbedding(query);
+  const clipClient = getCLIPClient();
+  const imageEmbedding = await clipClient.embedText(query);
   
   if (!imageEmbedding) {
     // Fallback: If CLIP embedding fails, use keyword search on image descriptions
@@ -204,4 +142,3 @@ You can also filter by:
     required: ['query'],
   },
 };
-
