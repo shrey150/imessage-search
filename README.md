@@ -1,22 +1,26 @@
 # iMessage MCP Server
 
-A Model Context Protocol (MCP) server that enables semantic search over your iMessage history on macOS.
+A Model Context Protocol (MCP) server that enables intelligent hybrid search over your iMessage history on macOS. Features LLM-powered query understanding, semantic search, keyword search, and image search.
 
 ## Features
 
-- **Semantic Search**: Search your messages using natural language queries
-- **Filtered Search**: Filter by person, group chat, and date range
-- **Contact Resolution**: Automatically maps phone numbers to contact names
+- **Smart Search**: LLM-powered query understanding that handles complex natural language queries
+- **Hybrid Search**: Combines semantic (vector) search with keyword (BM25) search for best results
+- **Image Search**: Find images using text descriptions via CLIP embeddings
+- **Temporal Reasoning**: Understands "last week", "in September", "late at night", etc.
+- **Person-Aware Queries**: Distinguishes "about Mark" (opinions) vs "from Mark" (their messages)
+- **Contact Resolution**: Automatically maps phone numbers to contact names at index time
 - **Incremental Indexing**: Only processes new messages, tracks progress
-- **Vector Database**: Uses Qdrant for fast similarity search
+- **Elasticsearch Backend**: Fast, durable, production-ready search
 
 ## Prerequisites
 
 - **macOS** (for access to Messages.db)
 - **Node.js 20+**
 - **pnpm** (`npm install -g pnpm`)
-- **Docker** (for Qdrant)
-- **OpenAI API key** (for embeddings)
+- **Docker** (for Elasticsearch)
+- **OpenAI API key** (for embeddings and query parsing)
+- **Python 3.8+** (optional, for image embeddings)
 - **Full Disk Access** granted to your terminal (System Preferences > Privacy & Security)
 
 ## Quick Start
@@ -34,19 +38,16 @@ cp env.example .env
 # Edit .env and add your OPENAI_API_KEY
 ```
 
-### 3. Start Qdrant
+### 3. Start Elasticsearch
 
 ```bash
-pnpm qdrant:start
+pnpm es:start
 ```
 
-Or manually:
+Or with Kibana for debugging:
 
 ```bash
-docker run -d --name imessage-mcp-qdrant \
-  -p 6333:6333 -p 6334:6334 \
-  -v imessage_mcp_qdrant:/qdrant/storage \
-  qdrant/qdrant
+pnpm es:kibana
 ```
 
 ### 4. Index your messages
@@ -55,9 +56,6 @@ docker run -d --name imessage-mcp-qdrant \
 # Check status first
 pnpm index:status
 
-# Index a small batch first to test (recommended!)
-pnpm index --limit 100
-
 # Index all new messages (incremental)
 pnpm index
 
@@ -65,7 +63,22 @@ pnpm index
 pnpm index:full
 ```
 
-### 5. Start the MCP server
+### 5. (Optional) Index images
+
+Requires Python with PyTorch and transformers:
+
+```bash
+# Install Python dependencies
+pip install -r scripts/requirements.txt
+
+# Embed images with CLIP
+pnpm images:embed
+
+# Or full re-embed
+pnpm images:embed:full
+```
+
+### 6. Start the MCP server
 
 ```bash
 pnpm start
@@ -79,39 +92,59 @@ pnpm start
 | `pnpm dev` | Start with hot reload for development |
 | `pnpm build` | Compile TypeScript to JavaScript |
 | `pnpm index` | Index new messages (incremental) |
-| `pnpm index --limit N` | Index only N messages (for testing) |
 | `pnpm index:full` | Full reindex of all messages |
 | `pnpm index:status` | Check indexing status |
-| `pnpm query "text"` | Quick CLI search |
-| `pnpm dashboard` | Launch Streamlit dashboard |
-| `pnpm qdrant:start` | Start Qdrant container |
-| `pnpm qdrant:stop` | Stop Qdrant container |
-| `pnpm qdrant:reset` | Delete Qdrant data and restart |
+| `pnpm es:start` | Start Elasticsearch |
+| `pnpm es:stop` | Stop Elasticsearch |
+| `pnpm es:reset` | Delete all ES data and restart |
+| `pnpm es:kibana` | Start ES with Kibana UI |
+| `pnpm images:embed` | Embed images with CLIP |
+| `pnpm images:embed:full` | Full re-embed all images |
 
 ## MCP Tools
 
-### `semantic_search`
+### `smart_search`
 
-Search messages using natural language.
+Intelligent search that understands natural language queries.
 
 ```json
 {
-  "query": "conversations about dinner plans",
+  "query": "What do I think about Mark?",
   "limit": 10
 }
 ```
 
-### `filtered_search`
+**Examples:**
+- `"What do I think about Mark?"` → Searches group chats for opinions, excludes Mark's DMs
+- `"Did Sarah tell me about dinner plans?"` → Searches messages FROM Sarah
+- `"Messages about the project last week"` → Combines semantic + temporal
+- `"Late night conversations with Alex"` → Time-of-day + person filter
 
-Search with structured filters.
+### `hybrid_search`
+
+Direct search with explicit filters for power users.
 
 ```json
 {
-  "query": "dinner",
-  "person": "John Smith",
+  "semanticQuery": "dinner plans",
+  "keywordQuery": "restaurant",
+  "sender": "John Smith",
   "chatName": "Family Group",
   "startDate": "2024-01-01",
   "endDate": "2024-12-31",
+  "isGroupChat": true,
+  "limit": 10
+}
+```
+
+### `image_search`
+
+Find images using text descriptions.
+
+```json
+{
+  "query": "photo of a dog",
+  "sender": "Alex",
   "limit": 10
 }
 ```
@@ -137,44 +170,82 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────┐     ┌─────────────┐
-│  messages.db    │────▶│   Indexer    │────▶│   Qdrant    │
-│  (SQLite)       │     │  (chunking)  │     │  (vectors)  │
-└─────────────────┘     └──────────────┘     └─────────────┘
-                              │
-┌─────────────────┐           │
-│  AddressBook.db │───────────┘
-│  (Contacts)     │
-└─────────────────┘
-                        ┌──────────────┐
-                        │  MCP Server  │
-                        │  (stdio)     │
-                        └──────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-    ┌─────────────────┐             ┌─────────────────┐
-    │ semantic_search │             │ filtered_search │
-    └─────────────────┘             └─────────────────┘
+┌─────────────────┐     ┌──────────────┐     ┌───────────────┐
+│  messages.db    │────▶│   Indexer    │────▶│ Elasticsearch │
+│  (SQLite)       │     │  (chunking)  │     │  (hybrid)     │
+└─────────────────┘     └──────────────┘     └───────────────┘
+                              │                      │
+┌─────────────────┐           │                      │
+│  AddressBook.db │───────────┘                      │
+│  (Contacts)     │                                  │
+└─────────────────┘                                  │
+                                                     ▼
+┌─────────────────┐     ┌──────────────┐     ┌───────────────┐
+│   Attachments   │────▶│ CLIP (Python)│────▶│ Image Vectors │
+│   (Images)      │     │              │     │               │
+└─────────────────┘     └──────────────┘     └───────────────┘
+                                                     │
+                        ┌───────────────────────────┬┘
+                        ▼                           ▼
+              ┌─────────────────┐         ┌─────────────────┐
+              │   LLM Query     │         │   MCP Server    │
+              │   Orchestrator  │────────▶│   (stdio)       │
+              └─────────────────┘         └─────────────────┘
+                                                   │
+                      ┌────────────────────────────┼────────────────────────────┐
+                      ▼                            ▼                            ▼
+            ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
+            │  smart_search   │          │  hybrid_search  │          │  image_search   │
+            └─────────────────┘          └─────────────────┘          └─────────────────┘
 ```
 
 ## How It Works
 
-1. **Message Chunking**: Messages are grouped into conversation segments based on 5-minute gaps. Each chunk contains 3-10 messages (~1000 characters max).
+### Text Search
 
-2. **Embeddings**: Chunks are embedded using OpenAI's `text-embedding-3-small` model (1536 dimensions).
+1. **Message Chunking**: Messages are grouped into conversation segments based on 5-minute gaps
+2. **Enrichment**: Chunks are enriched with derived fields (sender_is_me, temporal data, etc.)
+3. **Embeddings**: Chunks are embedded using OpenAI's `text-embedding-3-small` (1536 dimensions)
+4. **Indexing**: Documents are stored in Elasticsearch with full-text and vector indexes
 
-3. **Vector Storage**: Embeddings are stored in Qdrant with metadata (participants, timestamps, chat info).
+### Image Search
 
-4. **Contact Resolution**: Phone numbers are resolved to contact names by reading macOS AddressBook.
+1. **Extraction**: Images are extracted from iMessage attachments table
+2. **CLIP Embedding**: Images are embedded using OpenAI CLIP ViT-B/32 (512 dimensions)
+3. **Search**: Text queries are embedded and matched against image vectors
 
-5. **Search**: Queries are embedded and matched against stored chunks using cosine similarity.
+### Query Understanding
+
+1. **LLM Parsing**: Natural language queries are parsed by GPT-4o-mini
+2. **Classification**: Queries are classified (about_person, from_person, temporal, image, hybrid)
+3. **Filter Generation**: Appropriate filters, boosts, and exclusions are generated
+4. **Hybrid Execution**: BM25 + kNN search with automatic score fusion
+
+## Data Model
+
+Messages are indexed with rich metadata for nuanced queries:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `text` | text | Full-text searchable content |
+| `text_embedding` | dense_vector | Semantic similarity |
+| `sender` | keyword | Who sent the message |
+| `sender_is_me` | boolean | Quick filter for user's messages |
+| `participants` | keyword[] | Everyone in the chat |
+| `is_dm` / `is_group_chat` | boolean | Chat type |
+| `timestamp` | date | When the message was sent |
+| `year` / `month` / `day_of_week` / `hour_of_day` | int/keyword | Temporal filters |
+| `has_image` | boolean | Image presence |
+| `image_embedding` | dense_vector | CLIP vector for images |
 
 ## File Locations
 
 - **Messages DB**: `~/Library/Messages/chat.db`
+- **Attachments**: `~/Library/Messages/Attachments/`
 - **AddressBook**: `~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb`
 - **Index State**: `~/.imessage-mcp/state.db`
+- **Image State**: `~/.imessage-mcp/image_state.json`
+- **ES Data**: Docker volume `elasticsearch-data`
 
 ## Troubleshooting
 
@@ -182,14 +253,14 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 Grant Full Disk Access to your terminal in System Preferences > Privacy & Security > Full Disk Access.
 
-### "Qdrant not connected"
+### "Elasticsearch not connected"
 
-Make sure Qdrant is running:
+Make sure Elasticsearch is running:
 
 ```bash
-pnpm qdrant:start
-# or
-docker ps | grep qdrant
+pnpm es:start
+# Check health
+curl http://localhost:9200/_cluster/health
 ```
 
 ### "better-sqlite3 version mismatch"
@@ -200,7 +271,22 @@ Rebuild native modules:
 pnpm rebuild better-sqlite3
 ```
 
+### Image embeddings not working
+
+Install Python dependencies:
+
+```bash
+pip install -r scripts/requirements.txt
+```
+
+## Migration from Qdrant
+
+This version (2.0) uses Elasticsearch instead of Qdrant. If you're upgrading:
+
+1. Start Elasticsearch: `pnpm es:start`
+2. Re-index your messages: `pnpm index:full`
+3. (Optional) Remove Qdrant: `pnpm qdrant:reset && docker rm imessage-mcp-qdrant`
+
 ## License
 
 MIT
-

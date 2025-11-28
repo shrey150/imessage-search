@@ -1,6 +1,6 @@
 /**
  * Main indexer orchestrator
- * Coordinates reading messages, chunking, embedding, and storing
+ * Coordinates reading messages, chunking, embedding, and storing in Elasticsearch
  */
 
 import { MessageReader, getMessageReader } from './messages.js';
@@ -8,8 +8,8 @@ import { ContactResolver, getContactResolver } from './contacts.js';
 import { chunkMessages, filterChunks, deduplicateChunks, MessageChunk } from './chunker.js';
 import { StateManager, getStateManager } from './state.js';
 import { EmbeddingsClient, getEmbeddingsClient } from '../embeddings/openai.js';
-import { QdrantDB, getQdrantDB } from '../db/qdrant.js';
-import { chunkToUUID } from '../utils/hash.js';
+import { ElasticsearchDB, getElasticsearchDB, MessageDocument } from '../db/elasticsearch.js';
+import { enrichChunks, toESDocument } from './enrichment.js';
 import { log, formatNumber } from '../utils/progress.js';
 
 export interface IndexerOptions {
@@ -26,20 +26,20 @@ export interface IndexerStats {
 }
 
 /**
- * Main indexer class
+ * Main indexer class - uses Elasticsearch for storage
  */
 export class Indexer {
   private messageReader: MessageReader;
   private contactResolver: ContactResolver;
   private stateManager: StateManager;
   private _embeddingsClient: EmbeddingsClient | null = null;
-  private qdrantDB: QdrantDB;
+  private elasticsearchDB: ElasticsearchDB;
   
   constructor() {
     this.messageReader = getMessageReader();
     this.contactResolver = getContactResolver();
     this.stateManager = getStateManager();
-    this.qdrantDB = getQdrantDB();
+    this.elasticsearchDB = getElasticsearchDB();
   }
   
   // Lazy load embeddings client only when needed
@@ -59,10 +59,10 @@ export class Indexer {
     
     log('Indexer', 'Starting indexing process...');
     
-    // Check Qdrant health
-    const qdrantHealthy = await this.qdrantDB.healthCheck();
-    if (!qdrantHealthy) {
-      throw new Error('Qdrant is not reachable. Run `pnpm qdrant:start` first.');
+    // Check Elasticsearch health
+    const esHealthy = await this.elasticsearchDB.healthCheck();
+    if (!esHealthy) {
+      throw new Error('Elasticsearch is not reachable. Run `pnpm es:start` first.');
     }
     
     // Initialize components
@@ -74,7 +74,7 @@ export class Indexer {
     if (fullReindex) {
       log('Indexer', 'Full reindex requested, clearing state...');
       this.stateManager.reset();
-      await this.qdrantDB.clear();
+      await this.elasticsearchDB.clear();
     }
     
     // Get current state
@@ -128,28 +128,20 @@ export class Indexer {
       log('Indexer', `Created ${filteredChunks.length} chunks, ${uniqueChunks.length} are new`);
       
       if (uniqueChunks.length > 0) {
+        // Enrich chunks with derived fields
+        const enrichedChunks = enrichChunks(uniqueChunks);
+        
         // Generate embeddings
-        const texts = uniqueChunks.map(c => c.text);
+        const texts = enrichedChunks.map(c => c.text);
         const embeddingResults = await this.embeddingsClient.embedBatch(texts, true);
         
-        // Prepare for Qdrant
-        const qdrantChunks = uniqueChunks.map((chunk, i) => ({
-          id: chunk.id,
-          text: chunk.text,
-          embedding: embeddingResults[i].embedding,
-          payload: {
-            start_ts: chunk.startTs,
-            end_ts: chunk.endTs,
-            participants: chunk.participants,
-            chat_identifier: chunk.chatIdentifier,
-            group_name: chunk.groupName,
-            is_group_chat: chunk.isGroupChat,
-            message_count: chunk.messageCount,
-          },
-        }));
+        // Convert to Elasticsearch documents
+        const esDocuments = enrichedChunks.map((chunk, i) => 
+          toESDocument(chunk, embeddingResults[i].embedding)
+        );
         
-        // Store in Qdrant
-        await this.qdrantDB.upsertChunks(qdrantChunks, true);
+        // Store in Elasticsearch
+        await this.elasticsearchDB.indexDocuments(esDocuments, true);
         
         // Record in state
         const now = Math.floor(Date.now() / 1000);
@@ -157,7 +149,7 @@ export class Indexer {
           uniqueChunks.map(chunk => ({
             chunkHash: chunk.id,
             messageRowids: chunk.messageRowids,
-            qdrantPointId: chunkToUUID(chunk.text),
+            documentId: chunk.id, // ES document ID
             createdAt: now,
           }))
         );
@@ -204,7 +196,7 @@ export class Indexer {
    */
   async getStatus(): Promise<{
     state: ReturnType<StateManager['getState']>;
-    qdrant: Awaited<ReturnType<QdrantDB['getStats']>>;
+    elasticsearch: Awaited<ReturnType<ElasticsearchDB['getStats']>>;
     messageStats: ReturnType<MessageReader['getStats']>;
     pendingMessages: number;
   }> {
@@ -213,7 +205,7 @@ export class Indexer {
     
     const state = this.stateManager.getState();
     const messageStats = this.messageReader.getStats();
-    const qdrantStats = await this.qdrantDB.getStats();
+    const esStats = await this.elasticsearchDB.getStats();
     
     const pendingMessages = messageStats 
       ? this.messageReader.getNewMessageCount(state.lastMessageRowid)
@@ -224,7 +216,7 @@ export class Indexer {
     
     return {
       state,
-      qdrant: qdrantStats,
+      elasticsearch: esStats,
       messageStats: messageStats!,
       pendingMessages,
     };
@@ -240,4 +232,3 @@ export function getIndexer(): Indexer {
   }
   return indexerInstance;
 }
-

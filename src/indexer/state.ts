@@ -22,7 +22,7 @@ export interface IndexingState {
 export interface IndexedChunk {
   chunkHash: string;
   messageRowids: number[];
-  qdrantPointId: string;
+  documentId: string;  // ES document ID (legacy: was qdrantPointId)
   createdAt: number;
 }
 
@@ -174,7 +174,7 @@ export class StateManager {
     `).run(
       chunk.chunkHash,
       JSON.stringify(chunk.messageRowids),
-      chunk.qdrantPointId,
+      chunk.documentId,
       chunk.createdAt
     );
   }
@@ -195,7 +195,7 @@ export class StateManager {
         insert.run(
           chunk.chunkHash,
           JSON.stringify(chunk.messageRowids),
-          chunk.qdrantPointId,
+          chunk.documentId,
           chunk.createdAt
         );
       }

@@ -17,7 +17,7 @@ export function sha256(text: string): string {
 
 /**
  * Generate a deterministic UUID v5 from a chunk's content
- * This ensures the same chunk always gets the same Qdrant point ID
+ * This ensures the same chunk always gets the same document ID
  */
 export function chunkToUUID(chunkText: string): string {
   return uuidv5(sha256(chunkText), NAMESPACE_UUID);

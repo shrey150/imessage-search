@@ -1,5 +1,6 @@
 /**
  * MCP Server with Express and SSE transport
+ * Updated to use Elasticsearch with smart search capabilities
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -8,8 +9,21 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { semanticSearch, semanticSearchSchema, semanticSearchTool } from './tools/semantic-search.js';
-import { filteredSearch, filteredSearchSchema, filteredSearchTool } from './tools/filtered-search.js';
+import { 
+  smartSearch, 
+  smartSearchSchema, 
+  smartSearchTool,
+  formatSmartSearchResults,
+  hybridSearch,
+  hybridSearchSchema,
+  hybridSearchTool,
+} from './tools/smart-search.js';
+import {
+  imageSearch,
+  imageSearchSchema,
+  imageSearchTool,
+  formatImageSearchResults,
+} from './tools/image-search.js';
 import { log } from './utils/progress.js';
 
 /**
@@ -19,7 +33,7 @@ export function createServer(): Server {
   const server = new Server(
     {
       name: 'imessage-mcp',
-      version: '1.0.0',
+      version: '2.0.0',  // Bumped version for ES migration
     },
     {
       capabilities: {
@@ -31,7 +45,11 @@ export function createServer(): Server {
   // List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      tools: [semanticSearchTool, filteredSearchTool],
+      tools: [
+        smartSearchTool,
+        hybridSearchTool,
+        imageSearchTool,
+      ],
     };
   });
   
@@ -41,29 +59,71 @@ export function createServer(): Server {
     
     try {
       switch (name) {
-        case 'semantic_search': {
-          const input = semanticSearchSchema.parse(args);
-          const results = await semanticSearch(input);
+        case 'smart_search': {
+          const input = smartSearchSchema.parse(args);
+          const result = await smartSearch(input);
           
           return {
             content: [
               {
                 type: 'text',
-                text: formatSearchResults(results, input.query),
+                text: formatSmartSearchResults(result, input.query),
               },
             ],
           };
         }
         
-        case 'filtered_search': {
-          const input = filteredSearchSchema.parse(args);
-          const results = await filteredSearch(input);
+        case 'hybrid_search': {
+          const input = hybridSearchSchema.parse(args);
+          const results = await hybridSearch(input);
+          
+          // Format results
+          const lines = [];
+          if (results.length === 0) {
+            lines.push('No messages found with the specified filters');
+          } else {
+            lines.push(`Found ${results.length} result${results.length === 1 ? '' : 's'}:`);
+            lines.push('');
+            
+            for (let i = 0; i < results.length; i++) {
+              const r = results[i];
+              const timestamp = typeof r.document.timestamp === 'string' 
+                ? new Date(r.document.timestamp) 
+                : r.document.timestamp;
+              
+              const header = r.document.chat_name 
+                ? `${r.document.chat_name} (${r.document.participants.join(', ')})` 
+                : r.document.participants.join(', ');
+              
+              lines.push(`--- Result ${i + 1} (score: ${Math.round(r.score * 100) / 100}) ---`);
+              lines.push(`Chat: ${header}`);
+              lines.push(`Time: ${timestamp.toLocaleString()}`);
+              if (r.document.has_image) lines.push('📷 Contains image');
+              lines.push('');
+              lines.push(r.document.text);
+              lines.push('');
+            }
+          }
           
           return {
             content: [
               {
                 type: 'text',
-                text: formatFilteredResults(results, input),
+                text: lines.join('\n'),
+              },
+            ],
+          };
+        }
+        
+        case 'image_search': {
+          const input = imageSearchSchema.parse(args);
+          const results = await imageSearch(input);
+          
+          return {
+            content: [
+              {
+                type: 'text',
+                text: formatImageSearchResults(results, input.query),
               },
             ],
           };
@@ -90,81 +150,6 @@ export function createServer(): Server {
 }
 
 /**
- * Format semantic search results for display
- */
-function formatSearchResults(
-  results: Awaited<ReturnType<typeof semanticSearch>>,
-  query: string
-): string {
-  if (results.length === 0) {
-    return `No messages found matching "${query}"`;
-  }
-  
-  const lines = [
-    `Found ${results.length} message${results.length === 1 ? '' : 's'} matching "${query}":`,
-    '',
-  ];
-  
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    const header = r.groupName 
-      ? `${r.groupName} (${r.participants.join(', ')})` 
-      : r.participants.join(', ');
-    
-    lines.push(`--- Result ${i + 1} (score: ${r.score}) ---`);
-    lines.push(`Chat: ${header}`);
-    lines.push(`Time: ${r.startTime} (${r.relativeTime})`);
-    lines.push('');
-    lines.push(r.text);
-    lines.push('');
-  }
-  
-  return lines.join('\n');
-}
-
-/**
- * Format filtered search results for display
- */
-function formatFilteredResults(
-  results: Awaited<ReturnType<typeof filteredSearch>>,
-  input: { query?: string; person?: string; chatName?: string; startDate?: string; endDate?: string }
-): string {
-  const filters: string[] = [];
-  if (input.query) filters.push(`query: "${input.query}"`);
-  if (input.person) filters.push(`person: ${input.person}`);
-  if (input.chatName) filters.push(`chat: ${input.chatName}`);
-  if (input.startDate) filters.push(`from: ${input.startDate}`);
-  if (input.endDate) filters.push(`to: ${input.endDate}`);
-  
-  const filterStr = filters.length > 0 ? filters.join(', ') : 'none';
-  
-  if (results.length === 0) {
-    return `No messages found with filters: ${filterStr}`;
-  }
-  
-  const lines = [
-    `Found ${results.length} message${results.length === 1 ? '' : 's'} (filters: ${filterStr}):`,
-    '',
-  ];
-  
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    const header = r.groupName 
-      ? `${r.groupName} (${r.participants.join(', ')})` 
-      : r.participants.join(', ');
-    
-    lines.push(`--- Result ${i + 1} ---`);
-    lines.push(`Chat: ${header}`);
-    lines.push(`Time: ${r.startTime} (${r.relativeTime})`);
-    lines.push('');
-    lines.push(r.text);
-    lines.push('');
-  }
-  
-  return lines.join('\n');
-}
-
-/**
  * Start the MCP server with stdio transport
  */
 export async function startServer(): Promise<void> {
@@ -172,6 +157,5 @@ export async function startServer(): Promise<void> {
   const transport = new StdioServerTransport();
   
   await server.connect(transport);
-  log('Server', 'iMessage MCP server started', 'success');
+  log('Server', 'iMessage MCP server v2.0 started (Elasticsearch backend)', 'success');
 }
-

@@ -41,16 +41,16 @@ async function main() {
     console.log(`  Pending messages:   ${status.pendingMessages.toLocaleString()}`);
     console.log('');
     
-    // Qdrant info
-    console.log('🔍 Qdrant Vector Database');
+    // Elasticsearch info
+    console.log('🔍 Elasticsearch Database');
     console.log('─────────────────────────────────────────');
-    if (status.qdrant) {
+    if (status.elasticsearch) {
       console.log(`  Status:             ✅ Connected`);
-      console.log(`  Points (chunks):    ${status.qdrant.pointCount.toLocaleString()}`);
-      console.log(`  Segments:           ${status.qdrant.segmentCount}`);
+      console.log(`  Documents (chunks): ${status.elasticsearch.documentCount.toLocaleString()}`);
+      console.log(`  Index size:         ${status.elasticsearch.indexSize}`);
     } else {
       console.log(`  Status:             ❌ Not connected`);
-      console.log('  Run: pnpm qdrant:start');
+      console.log('  Run: pnpm es:start');
     }
     console.log('');
     
@@ -69,4 +69,3 @@ async function main() {
 }
 
 main();
-

@@ -1,0 +1,8 @@
+# Python dependencies for image embedding
+torch>=2.0.0
+transformers>=4.30.0
+Pillow>=10.0.0
+numpy>=1.24.0
+elasticsearch>=8.0.0
+tqdm>=4.65.0
+
