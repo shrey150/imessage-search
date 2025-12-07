@@ -159,3 +159,11 @@ export function getEmbeddingsClient(apiKey?: string): EmbeddingsClient {
   return clientInstance;
 }
 
+/**
+ * Convenience function to generate a single embedding
+ */
+export async function generateEmbedding(text: string): Promise<number[]> {
+  const client = getEmbeddingsClient();
+  return client.embed(text);
+}
+

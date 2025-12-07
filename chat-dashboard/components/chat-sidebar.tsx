@@ -19,7 +19,7 @@ import {
   deleteChat,
   formatRelativeTime,
 } from "@/lib/chat-history";
-import { Button } from "@/components/ui/button";
+import { useSpotlight } from "@/components/spotlight-modal";
 
 interface ChatSidebarProps {
   children: React.ReactNode;
@@ -27,6 +27,7 @@ interface ChatSidebarProps {
 
 export function ChatSidebar({ children }: ChatSidebarProps) {
   const pathname = usePathname();
+  const { openSpotlight, isOpen: isSpotlightOpen } = useSpotlight();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [hoveredChat, setHoveredChat] = useState<string | null>(null);
@@ -57,7 +58,6 @@ export function ChatSidebar({ children }: ChatSidebarProps) {
 
   // Check if we're on a chat page
   const isOnChatPage = pathname.startsWith("/chat");
-  const isOnSearchPage = pathname === "/search";
 
   // Get the link for the Agent button - most recent chat or new
   const agentLink = chats.length > 0 ? `/chat/${chats[0].id}` : "/chat/new";
@@ -95,7 +95,7 @@ export function ChatSidebar({ children }: ChatSidebarProps) {
             href={agentLink}
             className={cn(
               "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-              isOnChatPage && !isOnSearchPage
+              isOnChatPage
                 ? "bg-white/10 text-white"
                 : "text-white/70 hover:text-white hover:bg-white/5"
             )}
@@ -103,18 +103,21 @@ export function ChatSidebar({ children }: ChatSidebarProps) {
             <Sparkles className="h-4 w-4" />
             Agent
           </Link>
-          <Link
-            href="/search"
+          <button
+            onClick={() => openSpotlight()}
             className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-              isOnSearchPage
+              "w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              isSpotlightOpen
                 ? "bg-white/10 text-white"
                 : "text-white/70 hover:text-white hover:bg-white/5"
             )}
           >
             <Search className="h-4 w-4" />
             Spotlight
-          </Link>
+            <kbd className="ml-auto text-[10px] text-white/40 bg-white/5 px-1.5 py-0.5 rounded">
+              ⌘K
+            </kbd>
+          </button>
         </div>
 
         {/* Chat History */}

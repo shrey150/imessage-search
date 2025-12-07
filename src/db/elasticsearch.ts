@@ -22,17 +22,32 @@ export interface MessageDocument {
   text: string;
   text_embedding?: number[];
   
-  // Sender / Recipient
+  // === LEGACY FIELDS (kept for backwards compatibility) ===
+  // Sender / Recipient (string-based, from ContactResolver)
   sender: string;
   sender_is_me: boolean;
   participants: string[];
   participant_count: number;
   
-  // Chat metadata
-  chat_id: string;
+  // Chat metadata (iMessage-based)
+  chat_id: string;           // Original: iMessage chat_guid
   chat_name: string | null;
   is_dm: boolean;
   is_group_chat: boolean;
+  
+  // === NEW FIELDS (People Graph / Chat Graph) ===
+  // Person references (UUIDs from People Graph)
+  sender_id?: string;              // Person UUID who sent message
+  sender_handle?: string;          // Original iMessage handle (for debugging)
+  is_from_owner?: boolean;         // true if sender_id === owner's UUID
+  
+  // Chat reference (UUID from Chat Graph)
+  graph_chat_id?: string;          // Chat UUID from Chat Graph
+  chat_imessage_id?: string;       // Original chat_guid (same as chat_id, for clarity)
+  
+  // Participant references (UUIDs from People Graph)
+  participant_ids?: string[];      // All Person UUIDs in chat
+  participant_handles?: string[];  // Original handles (for debugging)
   
   // Temporal fields
   timestamp: Date;
@@ -66,6 +81,7 @@ export interface SearchResult {
  * Filters for search queries
  */
 export interface SearchFilters {
+  // Legacy filters (string-based)
   sender?: string;
   sender_is_me?: boolean;
   participants?: string[];
@@ -73,6 +89,16 @@ export interface SearchFilters {
   chat_name?: string;
   is_dm?: boolean;
   is_group_chat?: boolean;
+  
+  // New People Graph filters (UUID-based)
+  sender_id?: string;
+  participant_ids?: string[];
+  is_from_owner?: boolean;
+  
+  // New Chat Graph filters (UUID-based)
+  graph_chat_id?: string;
+  
+  // Temporal filters
   year?: number;
   month?: number | number[];
   day_of_week?: string;
@@ -142,6 +168,7 @@ const INDEX_MAPPING = {
         similarity: 'cosine' as const
       },
       
+      // === LEGACY FIELDS (backwards compatibility) ===
       // Sender / Recipient
       sender: { type: 'keyword' as const },
       sender_is_me: { type: 'boolean' as const },
@@ -153,6 +180,20 @@ const INDEX_MAPPING = {
       chat_name: { type: 'keyword' as const },
       is_dm: { type: 'boolean' as const },
       is_group_chat: { type: 'boolean' as const },
+      
+      // === NEW FIELDS (People Graph / Chat Graph) ===
+      // Person references
+      sender_id: { type: 'keyword' as const },
+      sender_handle: { type: 'keyword' as const },
+      is_from_owner: { type: 'boolean' as const },
+      
+      // Chat references
+      graph_chat_id: { type: 'keyword' as const },
+      chat_imessage_id: { type: 'keyword' as const },
+      
+      // Participant references
+      participant_ids: { type: 'keyword' as const },
+      participant_handles: { type: 'keyword' as const },
       
       // Temporal fields
       timestamp: { type: 'date' as const },
@@ -181,8 +222,21 @@ const INDEX_MAPPING = {
   settings: {
     number_of_shards: 1,
     number_of_replicas: 0,
-    'index.mapping.total_fields.limit': 50
+    'index.mapping.total_fields.limit': 100
   }
+};
+
+/**
+ * New fields mapping for migration (to add to existing index)
+ */
+export const PEOPLE_GRAPH_FIELDS_MAPPING = {
+  sender_id: { type: 'keyword' as const },
+  sender_handle: { type: 'keyword' as const },
+  is_from_owner: { type: 'boolean' as const },
+  graph_chat_id: { type: 'keyword' as const },
+  chat_imessage_id: { type: 'keyword' as const },
+  participant_ids: { type: 'keyword' as const },
+  participant_handles: { type: 'keyword' as const },
 };
 
 /**
@@ -510,6 +564,7 @@ export class ElasticsearchDB {
     
     const clauses: Array<Record<string, unknown>> = [];
     
+    // Legacy filters
     if (filters.sender) {
       clauses.push({ term: { sender: filters.sender } });
     }
@@ -531,6 +586,24 @@ export class ElasticsearchDB {
     if (filters.is_group_chat !== undefined) {
       clauses.push({ term: { is_group_chat: filters.is_group_chat } });
     }
+    
+    // New People Graph filters
+    if (filters.sender_id) {
+      clauses.push({ term: { sender_id: filters.sender_id } });
+    }
+    if (filters.participant_ids && filters.participant_ids.length > 0) {
+      clauses.push({ terms: { participant_ids: filters.participant_ids } });
+    }
+    if (filters.is_from_owner !== undefined) {
+      clauses.push({ term: { is_from_owner: filters.is_from_owner } });
+    }
+    
+    // New Chat Graph filters
+    if (filters.graph_chat_id) {
+      clauses.push({ term: { graph_chat_id: filters.graph_chat_id } });
+    }
+    
+    // Temporal filters
     if (filters.year) {
       clauses.push({ term: { year: filters.year } });
     }
@@ -631,6 +704,141 @@ export class ElasticsearchDB {
     } catch {
       return false;
     }
+  }
+  
+  /**
+   * Update mapping to add new fields (non-breaking)
+   */
+  async updateMapping(properties: Record<string, { type: string }>): Promise<void> {
+    await this.initialize();
+    
+    try {
+      await this.client.indices.putMapping({
+        index: INDEX_NAME,
+        properties: properties as Record<string, { type: 'keyword' | 'boolean' }>,
+      });
+      log('Elasticsearch', 'Mapping updated successfully', 'success');
+    } catch (err) {
+      log('Elasticsearch', `Failed to update mapping: ${err}`, 'error');
+      throw err;
+    }
+  }
+  
+  /**
+   * Update a single document (partial update)
+   */
+  async updateDocument(id: string, updates: Partial<MessageDocument>): Promise<void> {
+    await this.initialize();
+    
+    await this.client.update({
+      index: INDEX_NAME,
+      id,
+      doc: updates,
+    });
+  }
+  
+  /**
+   * Batch update documents
+   */
+  async batchUpdateDocuments(
+    updates: Array<{ id: string; doc: Partial<MessageDocument> }>,
+    showProgress = false
+  ): Promise<void> {
+    if (updates.length === 0) return;
+    
+    await this.initialize();
+    
+    const batchSize = 100;
+    const batches = this.createBatches(updates, batchSize);
+    const progress = showProgress ? new ProgressBar('ES Update', updates.length) : null;
+    let processed = 0;
+    
+    for (const batch of batches) {
+      const operations = batch.flatMap(u => [
+        { update: { _index: INDEX_NAME, _id: u.id } },
+        { doc: u.doc }
+      ]);
+      
+      const response = await this.client.bulk({
+        operations,
+        refresh: false,
+      });
+      
+      if (response.errors) {
+        const errorItems = response.items.filter(item => item.update?.error);
+        log('Elasticsearch', `Batch update had ${errorItems.length} errors`, 'warn');
+      }
+      
+      processed += batch.length;
+      progress?.update(processed);
+    }
+    
+    await this.client.indices.refresh({ index: INDEX_NAME });
+    progress?.complete();
+  }
+  
+  /**
+   * Get document with embedding (for checking if embedding exists)
+   */
+  async getDocumentWithEmbedding(id: string): Promise<{ text_embedding?: number[] } | null> {
+    try {
+      const response = await this.client.get({
+        index: INDEX_NAME,
+        id,
+        _source_includes: ['text_embedding']
+      });
+      return response._source as { text_embedding?: number[] };
+    } catch {
+      return null;
+    }
+  }
+  
+  /**
+   * Get all document IDs (for migration)
+   */
+  async getAllDocumentIds(): Promise<string[]> {
+    await this.initialize();
+    
+    const ids: string[] = [];
+    
+    // Use scroll API for large result sets (avoids _id fielddata issue)
+    const response = await this.client.search({
+      index: INDEX_NAME,
+      size: 1000,
+      scroll: '2m',
+      _source: false,
+      query: { match_all: {} },
+    });
+    
+    let scrollId = response._scroll_id;
+    let hits = response.hits.hits;
+    
+    while (hits.length > 0) {
+      for (const hit of hits) {
+        ids.push(hit._id!);
+      }
+      
+      if (!scrollId) break;
+      
+      const scrollResponse = await this.client.scroll({
+        scroll_id: scrollId,
+        scroll: '2m',
+      });
+      
+      scrollId = scrollResponse._scroll_id;
+      hits = scrollResponse.hits.hits;
+    }
+    
+    // Clean up scroll context
+    if (scrollId) {
+      try {
+        await this.client.clearScroll({ scroll_id: scrollId });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    
+    return ids;
   }
   
   /**

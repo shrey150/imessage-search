@@ -190,6 +190,9 @@ class ElasticsearchClient {
 
     const clauses: Array<Record<string, unknown>> = [];
 
+    if (filters.chat_id) {
+      clauses.push({ term: { chat_id: filters.chat_id } });
+    }
     if (filters.sender) {
       clauses.push({ term: { sender: filters.sender } });
     }

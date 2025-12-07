@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { ChevronLeft, Loader2, X, ZoomIn, ZoomOut, RotateCw, Play, Pause, Volume2, VolumeX, Maximize, SkipBack, SkipForward } from "lucide-react";
+import { ChevronLeft, Loader2, X, ZoomIn, ZoomOut, RotateCw, Play, Pause, Volume2, VolumeX, Maximize, SkipBack, SkipForward, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { processMessagesWithReactions, type Reaction } from "@/lib/reactions";
 import type { MessagesResponse, MessageWithReactions } from "@/app/api/messages/route";
 import { extractUrls, isUrlOnlyMessage, LinkPreview } from "@/components/link-preview";
+import { useSpotlight } from "@/components/spotlight-modal";
 
 // Image Lightbox Component
 function ImageLightbox({ 
@@ -889,6 +890,7 @@ export default function ConversationPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { openSpotlight } = useSpotlight();
 
   const chatId = decodeURIComponent(params.chatId as string);
   const anchorTimestamp = searchParams.get("t");
@@ -912,6 +914,18 @@ export default function ConversationPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
+
+  // Cmd+F to open scoped spotlight search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        openSpotlight(chatId);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [chatId, openSpotlight]);
 
   // Process messages to extract text-based reactions and attach them to original messages
   const processedMessages = useMemo(() => {
@@ -1150,8 +1164,14 @@ export default function ConversationPage() {
           )}
         </div>
 
-        {/* Spacer for centering */}
-        <div className="w-[60px]" />
+        {/* Search button */}
+        <button
+          onClick={() => openSpotlight(chatId)}
+          className="flex items-center justify-center w-[60px] text-[#007AFF] hover:opacity-70 transition-opacity"
+          title="Search in conversation (⌘F)"
+        >
+          <Search className="h-5 w-5" />
+        </button>
       </header>
 
       {/* Messages area */}

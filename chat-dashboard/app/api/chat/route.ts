@@ -6,6 +6,13 @@
 import OpenAI from 'openai';
 import { getElasticsearchClient, type SearchResult } from '@/lib/elasticsearch';
 import { getEmbeddingsClient } from '@/lib/embeddings';
+import {
+  resolvePerson,
+  getPersonWithDetails,
+  listPeople,
+  isAvailable as isPeopleGraphAvailable,
+  type PersonWithDetails,
+} from '@/lib/people-graph';
 
 // Load environment variables
 import 'dotenv/config';
@@ -293,6 +300,67 @@ You must call render_chart with:
       },
     },
   },
+  // ============================================================
+  // People Graph Tools
+  // ============================================================
+  {
+    type: 'function',
+    function: {
+      name: 'resolve_person',
+      description: `Look up a person by name, nickname, phone number, or email. Returns their unique ID and details.
+
+Use this to:
+- Find someone before searching their messages
+- Get context about a person (aliases, relationships, notes)
+- Verify you have the right person`,
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Name, nickname, phone number, or email to look up',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_person_context',
+      description: `Get full context about a person including their relationships, what chats they're in, and any saved memories about them.
+
+Use this after resolve_person to get comprehensive context before searching.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          person_id: {
+            type: 'string',
+            description: 'Person UUID from resolve_person',
+          },
+        },
+        required: ['person_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_people',
+      description: `List people in the knowledge graph. Useful for exploring who's indexed.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: {
+            type: 'number',
+            description: 'Max results to return (default 50)',
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 // Execute tool calls
@@ -480,6 +548,99 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return `:::chart\n${JSON.stringify(chartConfig)}\n:::`;
     }
 
+    // ============================================================
+    // People Graph Tools
+    // ============================================================
+
+    if (name === 'resolve_person') {
+      const { query } = args as { query: string };
+      
+      if (!isPeopleGraphAvailable()) {
+        return JSON.stringify({ error: 'People Graph not available. Run migration first.' });
+      }
+      
+      const result = resolvePerson(query);
+      
+      if (result.found && result.person) {
+        return JSON.stringify({
+          found: true,
+          person: {
+            id: result.person.id,
+            name: result.person.name,
+            is_owner: result.person.is_owner,
+            notes: result.person.notes,
+            handles: result.person.handles.map(h => ({ handle: h.handle, type: h.type })),
+            aliases: result.person.aliases.map(a => a.alias),
+            relationships: result.person.relationships.map(r => ({
+              person_name: r.other_person_name,
+              type: r.type,
+              description: r.description,
+            })),
+            attributes: Object.fromEntries(result.person.attributes.map(a => [a.key, a.value])),
+          },
+        }, null, 2);
+      }
+      
+      return JSON.stringify({
+        found: false,
+        suggestions: result.suggestions || [],
+        message: result.suggestions?.length 
+          ? `Did you mean: ${result.suggestions.join(', ')}?`
+          : `No person found matching "${query}"`,
+      }, null, 2);
+    }
+
+    if (name === 'get_person_context') {
+      const { person_id } = args as { person_id: string };
+      
+      if (!isPeopleGraphAvailable()) {
+        return JSON.stringify({ error: 'People Graph not available. Run migration first.' });
+      }
+      
+      const person = getPersonWithDetails(person_id);
+      if (!person) {
+        return JSON.stringify({ found: false, error: 'Person not found' });
+      }
+      
+      return JSON.stringify({
+        found: true,
+        person: {
+          id: person.id,
+          name: person.name,
+          is_owner: person.is_owner,
+          notes: person.notes,
+          handles: person.handles.map(h => ({ handle: h.handle, type: h.type })),
+          aliases: person.aliases.map(a => a.alias),
+          relationships: person.relationships.map(r => ({
+            person_name: r.other_person_name,
+            type: r.type,
+            description: r.description,
+          })),
+          attributes: Object.fromEntries(person.attributes.map(a => [a.key, a.value])),
+        },
+      }, null, 2);
+    }
+
+    if (name === 'list_people') {
+      const { limit = 50 } = args as { limit?: number };
+      
+      if (!isPeopleGraphAvailable()) {
+        return JSON.stringify({ error: 'People Graph not available. Run migration first.' });
+      }
+      
+      const people = listPeople({ limit });
+      
+      return JSON.stringify({
+        count: people.length,
+        people: people.map(p => ({
+          id: p.id,
+          name: p.name,
+          is_owner: p.is_owner,
+          auto_created: p.auto_created,
+        })),
+      }, null, 2);
+    }
+
     return `Unknown tool: ${name}`;
   } catch (error) {
     console.error('Tool execution error:', error);
@@ -567,6 +728,8 @@ All claims trace to retrieved messages. If unsure, search again. Label speculati
 
 ## Available Tools
 
+### Search Tools
+
 **search_messages** — Semantic + keyword hybrid search. Understands meaning.
 - Best for: finding conversations about topics, understanding vibes, discovering related discussions
 
@@ -582,6 +745,20 @@ All claims trace to retrieved messages. If unsure, search again. Label speculati
 - CRITICAL: You must pass the actual data array from analytics_query in the 'data' parameter
 - Transform buckets: [{key, label, doc_count}] → [{label, count}] for the chart
 - Choose: line/area for time series, bar for rankings, pie for proportions
+
+### People Graph Tools
+
+**resolve_person** — Look up a person by name, nickname, or phone number.
+- Returns their unique ID, aliases, relationships, and notes
+- Use BEFORE searching to ensure you have the right person
+- Example: resolve_person("Faye") → { id: "abc-123", name: "Faye Smith", aliases: ["FS"], relationships: [...] }
+
+**get_person_context** — Get full context about a person after resolving them.
+- Returns relationships, what chats they're in, and any saved notes
+- Use to understand who someone is before diving into their messages
+
+**list_people** — Browse indexed people in the knowledge graph.
+- Useful for exploring who's in the archive
 
 ### When to use analytics_query vs search tools:
 - "How many messages did I send?" → analytics_query (count)

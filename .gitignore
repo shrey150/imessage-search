@@ -4,3 +4,5 @@ dist/
 *.log
 .DS_Store
 
+# People Graph database (contains personal data)
+data/people.db

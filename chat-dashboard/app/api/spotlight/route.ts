@@ -11,7 +11,7 @@ import 'dotenv/config';
 
 export async function POST(req: Request) {
   const body = await req.json();
-  const { query, offset = 0, limit = 20 } = body;
+  const { query, offset = 0, limit = 20, chatId } = body;
 
   if (!query || typeof query !== 'string') {
     return Response.json({ messages: [], images: [], query: '', total: 0, hasMore: false });
@@ -25,19 +25,25 @@ export async function POST(req: Request) {
   try {
     const es = getElasticsearchClient();
 
+    // Build filters - optionally scope to a specific chat
+    const baseFilters: { chat_id?: string } = {};
+    if (chatId && typeof chatId === 'string') {
+      baseFilters.chat_id = chatId;
+    }
+
     // Use exact search for better keyword matching (phrase + keyword combined)
     // This prioritizes exact phrase matches while still returning keyword matches
     // Results sorted by timestamp (newest first) for chronological browsing
     const messageResults = await es.spotlightSearch({
       query: trimmedQuery,
-      filters: {},
+      filters: baseFilters,
       limit,
       offset,
     });
 
-    // Search for messages with images (only on first page)
+    // Search for messages with images (only on first page, and only if not scoped to a chat)
     let imageResults: { results: Array<{ id: string; score: number; document: unknown }>; total: number } = { results: [], total: 0 };
-    if (offset === 0) {
+    if (offset === 0 && !chatId) {
       imageResults = await es.spotlightSearch({
         query: trimmedQuery,
         filters: { has_image: true },
