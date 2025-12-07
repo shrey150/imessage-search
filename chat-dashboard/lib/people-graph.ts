@@ -6,9 +6,11 @@
 
 import Database from 'better-sqlite3';
 import { existsSync } from 'fs';
+import { join } from 'path';
 
-// Configuration
-const PEOPLE_DB_PATH = process.env.PEOPLE_DB_PATH || '../data/people.db';
+// Configuration - resolve path relative to workspace root
+// Next.js runs from chat-dashboard/, so go up one level to find data/
+const PEOPLE_DB_PATH = process.env.PEOPLE_DB_PATH || join(process.cwd(), '..', 'data', 'people.db');
 
 // Types
 interface Person {
@@ -72,16 +74,20 @@ let db: Database.Database | null = null;
 function getDb(): Database.Database | null {
   if (db) return db;
   
+  console.log(`[PeopleGraph] Looking for database at: ${PEOPLE_DB_PATH}`);
+  console.log(`[PeopleGraph] Current working directory: ${process.cwd()}`);
+  
   if (!existsSync(PEOPLE_DB_PATH)) {
-    console.warn(`People Graph database not found at ${PEOPLE_DB_PATH}`);
+    console.warn(`[PeopleGraph] Database not found at ${PEOPLE_DB_PATH}`);
     return null;
   }
   
   try {
     db = new Database(PEOPLE_DB_PATH, { readonly: true });
+    console.log(`[PeopleGraph] Successfully opened database`);
     return db;
   } catch (err) {
-    console.error('Failed to open People Graph database:', err);
+    console.error('[PeopleGraph] Failed to open database:', err);
     return null;
   }
 }

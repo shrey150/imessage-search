@@ -7,6 +7,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import sharp from 'sharp';
+import convert from 'heic-convert';
 
 // Only allow serving images from the Messages attachments directory
 const ALLOWED_PATH_PREFIX = `${homedir()}/Library/Messages/Attachments`;
@@ -24,8 +25,11 @@ const MIME_TYPES: Record<string, string> = {
   '.bmp': 'image/bmp',
 };
 
-// Extensions that need conversion to JPEG for browser compatibility
-const NEEDS_CONVERSION = ['.heic', '.heif', '.tiff', '.bmp'];
+// HEIC/HEIF extensions that need special handling
+const HEIC_EXTENSIONS = ['.heic', '.heif'];
+
+// Other extensions that sharp can handle
+const SHARP_CONVERSION = ['.tiff', '.bmp'];
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -51,9 +55,26 @@ export async function GET(req: Request) {
   try {
     const ext = decodedPath.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
     
-    // Check if we need to convert the image
-    if (NEEDS_CONVERSION.includes(ext)) {
-      // Convert to JPEG using sharp
+    // Handle HEIC/HEIF files with heic-convert
+    if (HEIC_EXTENSIONS.includes(ext)) {
+      const inputBuffer = readFileSync(decodedPath);
+      
+      const outputBuffer = await convert({
+        buffer: inputBuffer,
+        format: 'JPEG',
+        quality: 0.85,
+      });
+      
+      return new Response(outputBuffer, {
+        headers: {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
+      });
+    }
+    
+    // Handle other formats that need conversion with sharp
+    if (SHARP_CONVERSION.includes(ext)) {
       const convertedBuffer = await sharp(decodedPath)
         .jpeg({ quality: 85 })
         .toBuffer();
@@ -78,6 +99,6 @@ export async function GET(req: Request) {
     });
   } catch (error) {
     console.error('Error serving image:', error);
-    return new Response('Failed to read file', { status: 500 });
+    return new Response('Failed to process image', { status: 500 });
   }
 }

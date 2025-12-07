@@ -95,6 +95,15 @@ describe('Handle Normalization', () => {
       expect(inferHandleType('12345')).toBe('phone');
     });
   });
+
+  describe('edge cases', () => {
+    it('should return empty string for non-phone non-email (e.g. "Me")', () => {
+      // "Me" has no digits and no @, so normalizes to empty
+      // This is expected - resolution should skip empty handle lookups
+      const normalized = normalizeHandle('Me');
+      expect(normalized).toBe('');
+    });
+  });
 });
 
 // ============================================================

@@ -297,16 +297,18 @@ export class PeopleGraph {
     const queryLower = query.toLowerCase().trim();
     const queryNormalized = normalizeHandle(query);
     
-    // 1. Try exact handle match first
-    const handleMatch = this.db.select()
-      .from(handles)
-      .where(eq(handles.handle_normalized, queryNormalized))
-      .get();
+    // 1. Try exact handle match first (skip if normalized is empty)
+    if (queryNormalized.length > 0) {
+      const handleMatch = this.db.select()
+        .from(handles)
+        .where(eq(handles.handle_normalized, queryNormalized))
+        .get();
     
-    if (handleMatch) {
-      const person = await this.getPersonWithDetails(handleMatch.person_id);
-      if (person) {
-        return { found: true, person };
+      if (handleMatch) {
+        const person = await this.getPersonWithDetails(handleMatch.person_id);
+        if (person) {
+          return { found: true, person };
+        }
       }
     }
     
